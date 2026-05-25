@@ -25,14 +25,19 @@ async function startRadioEngine() {
         const source = json?.icestats?.source;
         const sources = Array.isArray(source) ? source : source ? [source] : [];
         const match = sources.find(
-          (s: { listenurl?: string }) => s.listenurl?.includes(mount),
+          (s: { listenurl?: string; server_name?: string }) =>
+            s.listenurl?.includes(mount) ||
+            s.server_name?.includes(mount.replace("/", "")),
         );
         if (match?.listeners != null) {
-          await engine.setListeners(parseInt(match.listeners, 10));
+          await engine.setListeners(parseInt(String(match.listeners), 10));
         }
+        engine.syncIcecastStatus(Boolean(match), true);
+      } else {
+        engine.syncIcecastStatus(false, false);
       }
     } catch {
-      /* Icecast offline */
+      engine.syncIcecastStatus(false, false);
     }
   }, 10000);
 

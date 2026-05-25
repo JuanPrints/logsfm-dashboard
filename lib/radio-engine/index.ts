@@ -186,6 +186,18 @@ export class RadioEngine extends EventEmitter {
     updateStreamStats({ listeners: count }).catch(() => {});
   }
 
+  syncIcecastStatus(hasActiveSource: boolean, icecastReachable: boolean) {
+    if (!icecastReachable) {
+      this.setStreamStatus("error");
+      return;
+    }
+    if (hasActiveSource || this.playbackState === "playing") {
+      this.setStreamStatus("online");
+    } else if (this.playbackState === "stopped") {
+      this.setStreamStatus("offline");
+    }
+  }
+
   setStreamStatus(status: StreamStatus) {
     this.streamStatus = status;
     if (status === "online" && !this.streamStartTime) {
