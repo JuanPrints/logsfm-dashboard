@@ -17,7 +17,7 @@ import { useRadioStore } from "@/lib/store/radio-store";
 import { useEffect } from "react";
 
 const navItems = [
-  { href: "/admin", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/admin", label: "Consola DJ", icon: LayoutDashboard },
   { href: "/admin/playlists", label: "Playlists", icon: ListMusic },
   { href: "/admin/songs", label: "Canciones", icon: Disc3 },
   { href: "/admin/schedule", label: "Programación", icon: Calendar },

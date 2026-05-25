@@ -27,6 +27,9 @@ export async function POST(request: Request) {
       case "pause":
         await engine.pause();
         break;
+      case "stop":
+        await engine.stop();
+        break;
       case "next":
         await engine.next();
         break;
@@ -47,6 +50,15 @@ export async function POST(request: Request) {
         break;
       case "toggle-mic":
         await engine.toggleMic();
+        break;
+      case "load-playlist":
+        await engine.loadPlaylist(body.playlistId, Boolean(body.play));
+        break;
+      case "play-now":
+        await engine.playNow(body.songId);
+        break;
+      case "set-volume":
+        engine.setVolume(body.musicVolume ?? 85, body.micVolume ?? 100, body.ducking ?? true);
         break;
       case "add-to-queue":
         await addToQueue(body.songId);
@@ -70,6 +82,7 @@ export async function POST(request: Request) {
     const state = await engine.getFullState();
     return NextResponse.json({ success: true, data: state });
   } catch (err) {
+    console.error("[POST /api/admin/radio]", err);
     return NextResponse.json(
       { success: false, error: err instanceof Error ? err.message : "Error" },
       { status: 500 },

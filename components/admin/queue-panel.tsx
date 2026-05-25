@@ -1,61 +1,65 @@
 "use client";
 
+import { Trash2, ListX } from "lucide-react";
 import { formatDuration } from "@/lib/utils";
 import { useRadioStore } from "@/lib/store/radio-store";
-import { Trash2 } from "lucide-react";
 
 export function QueuePanel() {
-  const { queue, sendCommand } = useRadioStore();
+  const { queue, sendCommand, refresh } = useRadioStore();
+
+  const clearQueue = async () => {
+    await fetch("/api/admin/radio", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "clear-queue" }),
+    });
+    await refresh();
+  };
 
   return (
-    <div className="glass rounded-2xl p-5">
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Cola de reproducción</h2>
-        <span className="rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-medium text-accent">
-          {queue.length} tracks
-        </span>
+    <div className="panel flex h-full flex-col overflow-hidden rounded-lg">
+      <div className="panel-header flex items-center justify-between">
+        <span>Cola de reproducción ({queue.length})</span>
+        {queue.length > 0 && (
+          <button
+            type="button"
+            onClick={clearQueue}
+            className="flex items-center gap-1 text-[10px] text-danger hover:underline"
+          >
+            <ListX className="h-3 w-3" /> Vaciar
+          </button>
+        )}
       </div>
 
-      <div className="max-h-80 space-y-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {queue.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted">
-            La cola está vacía
-          </p>
+          <div className="p-6 text-center text-xs text-muted">
+            <p>Cola vacía</p>
+            <p className="mt-2">
+              1. Carga una playlist arriba, o<br />
+              2. Agrega canciones desde la biblioteca →
+            </p>
+          </div>
         ) : (
           queue.map((item, index) => (
             <div
               key={item.id}
-              className="group flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-card-hover"
+              className="group flex items-center gap-2 border-b border-border/50 px-2 py-1.5 text-xs hover:bg-card-hover"
             >
-              <span className="w-6 text-center text-xs text-muted">
-                {index + 1}
-              </span>
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-background">
-                {item.coverUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={item.coverUrl} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <span className="text-muted">♪</span>
-                )}
-              </div>
+              <span className="w-5 text-center font-mono text-muted">{index + 1}</span>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{item.title}</p>
-                <p className="truncate text-xs text-muted">{item.artist}</p>
+                <p className="truncate font-medium">{item.title}</p>
+                <p className="truncate text-muted">{item.artist}</p>
               </div>
-              <span className="text-xs text-muted">
-                {formatDuration(item.duration)}
-              </span>
+              <span className="text-muted">{formatDuration(item.duration)}</span>
               <button
                 type="button"
                 onClick={() =>
-                  sendCommand({
-                    action: "remove-from-queue",
-                    queueItemId: item.id,
-                  })
+                  sendCommand({ action: "remove-from-queue", queueItemId: item.id })
                 }
-                className="rounded p-1 text-muted opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                className="rounded p-1 text-muted opacity-0 hover:text-danger group-hover:opacity-100"
               >
-                <Trash2 className="h-4 w-4" />
+                <Trash2 className="h-3 w-3" />
               </button>
             </div>
           ))

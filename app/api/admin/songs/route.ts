@@ -51,7 +51,7 @@ export async function POST(request: Request) {
       metadata = { common: {}, format: {} };
     }
 
-    const { localPath, remoteUrl } = await storeSongFile(file.name, buffer);
+    const { relativePath, remoteUrl } = await storeSongFile(file.name, buffer);
 
     let coverUrl: string | null = null;
     if (cover) {
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
       album: metadata.common?.album ?? null,
       duration: Math.round(metadata.format?.duration ?? 0),
       cover_url: coverUrl,
-      file_path: localPath,
+      file_path: remoteUrl ?? relativePath,
       category_id: categoryId?.trim() ? categoryId : null,
     });
 

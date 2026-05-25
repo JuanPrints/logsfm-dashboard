@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import type { NowPlaying, PlaybackState, StreamInfo, StreamStatus } from "@/lib/types";
 import { getSong } from "@/lib/db/songs";
+import { resolveSongFilePath, songFileExists } from "@/lib/upload/resolve-song-path";
 import { popNextFromQueue, getQueue, fillQueueFromPlaylist } from "@/lib/db/queue";
 import { addToHistory } from "@/lib/db/history";
 import { getRadioSettings, updateRadioSettings, updateStreamStats } from "@/lib/db/settings";
@@ -23,6 +24,10 @@ export class RadioEngine extends EventEmitter {
   private streamStartTime: Date | null = null;
   private micEnabled = false;
   private isLiveDj = false;
+  private musicVolume = 85;
+  private micVolume = 100;
+  private ducking = true;
+  private lastFfmpegError = "";
 
   constructor() {
     super();
@@ -83,12 +88,17 @@ export class RadioEngine extends EventEmitter {
   async play() {
     if (this.playbackState === "playing") return;
 
+    const queue = await getQueue();
+    if (queue.length === 0) {
+      await this.ensureQueueFromActivePlaylist();
+    }
+
     if (!this.nowPlaying) {
       await this.loadNextTrack();
     }
 
     if (!this.nowPlaying) {
-      throw new Error("No hay canciones en la cola");
+      throw new Error("No hay canciones en la cola. Carga una playlist o agrega canciones desde la biblioteca.");
     }
 
     await this.startStream();
@@ -97,6 +107,76 @@ export class RadioEngine extends EventEmitter {
     this.startElapsedTimer();
     await updateRadioSettings({ playback_state: "playing" });
     this.emit("state-change", this.getState());
+  }
+
+  async stop() {
+    this.stopStream();
+    this.playbackState = "stopped";
+    this.nowPlaying = null;
+    this.stopElapsedTimer();
+    await updateRadioSettings({ playback_state: "stopped", current_song_id: null });
+    this.setStreamStatus("offline");
+    this.emit("state-change", this.getState());
+  }
+
+  async loadPlaylist(playlistId: string, autoPlay = false) {
+    const { setActivePlaylist } = await import("@/lib/db/playlists");
+    const pl = await setActivePlaylist(playlistId);
+    await fillQueueFromPlaylist(playlistId, pl.shuffle);
+    this.nowPlaying = null;
+    this.emit("queue-change");
+    if (autoPlay) await this.play();
+  }
+
+  async playNow(songId: string) {
+    const song = await getSong(songId);
+    const { clearQueue, addToQueue } = await import("@/lib/db/queue");
+    await clearQueue();
+    await addToQueue(songId);
+
+    this.nowPlaying = {
+      id: song.id,
+      title: song.title,
+      artist: song.artist,
+      coverUrl: song.cover_url,
+      duration: song.duration,
+      elapsed: 0,
+      startedAt: new Date().toISOString(),
+    };
+
+    await updateRadioSettings({ current_song_id: song.id, playback_state: "playing" });
+    await this.startStream();
+    this.playbackState = "playing";
+    this.startedAt = new Date();
+    this.startElapsedTimer();
+    this.emit("state-change", this.getState());
+    this.emit("queue-change");
+  }
+
+  setVolume(musicVolume: number, micVolume: number, ducking: boolean) {
+    this.musicVolume = musicVolume;
+    this.micVolume = micVolume;
+    this.ducking = ducking;
+    if (this.playbackState === "playing") {
+      this.startStream();
+    }
+  }
+
+  private async ensureQueueFromActivePlaylist() {
+    try {
+      const db = getMatuClient();
+      const { data } = await db
+        .from("playlists")
+        .select("id, shuffle")
+        .eq("is_active", true)
+        .limit(1)
+        .single();
+      if (data?.id) {
+        await fillQueueFromPlaylist(data.id as string, Boolean(data.shuffle));
+      }
+    } catch {
+      /* no active playlist */
+    }
   }
 
   async pause() {
@@ -265,9 +345,7 @@ export class RadioEngine extends EventEmitter {
   }
 
   private resolveFilePath(filePath: string) {
-    if (filePath.startsWith("http")) return filePath;
-    if (path.isAbsolute(filePath)) return filePath;
-    return path.join(process.cwd(), filePath);
+    return resolveSongFilePath(filePath);
   }
 
   private async startStream() {
@@ -278,17 +356,28 @@ export class RadioEngine extends EventEmitter {
     const song = await getSong(this.nowPlaying.id);
     const inputFile = this.resolveFilePath(song.file_path);
 
+    if (!inputFile.startsWith("http") && !songFileExists(song.file_path)) {
+      const msg =
+        `Archivo MP3 no encontrado. Ruta DB: ${song.file_path} | ` +
+        `Resuelta: ${inputFile} | cwd: ${process.cwd()}`;
+      this.lastFfmpegError = msg;
+      this.setStreamStatus("error");
+      throw new Error(`Archivo MP3 no encontrado: ${path.basename(song.file_path)}`);
+    }
+
     const icecastHost = process.env.ICECAST_HOST ?? "localhost";
     const icecastPort = process.env.ICECAST_PORT ?? "8000";
     const icecastPassword = process.env.ICECAST_PASSWORD ?? "hackme";
     const icecastMount = process.env.ICECAST_MOUNT ?? "/stream";
     const bitrate = process.env.ICECAST_BITRATE ?? "128";
+    const volume = (this.musicVolume / 100).toFixed(2);
 
     const outputUrl = `icecast://source:${icecastPassword}@${icecastHost}:${icecastPort}${icecastMount}`;
 
     const args = [
       "-re",
       "-i", inputFile,
+      "-af", `volume=${volume}`,
       "-acodec", "libmp3lame",
       "-ab", `${bitrate}k`,
       "-ar", "44100",
@@ -304,7 +393,12 @@ export class RadioEngine extends EventEmitter {
 
     this.ffmpegProcess.stderr.on("data", (data: Buffer) => {
       const msg = data.toString();
-      if (msg.includes("Connection refused")) {
+      if (msg.includes("Connection refused") || msg.includes("403") || msg.includes("401")) {
+        this.lastFfmpegError = msg.slice(0, 200);
+        this.setStreamStatus("error");
+        console.error("[FFmpeg]", msg.slice(0, 300));
+      } else if (msg.includes("No such file")) {
+        this.lastFfmpegError = msg.slice(0, 200);
         this.setStreamStatus("error");
       } else if (msg.includes("size=")) {
         this.setStreamStatus("online");
