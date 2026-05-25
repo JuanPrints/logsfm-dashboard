@@ -80,6 +80,7 @@ export interface SocketEvents {
 export type AdminCommand =
   | { action: "play" }
   | { action: "pause" }
+  | { action: "stop" }
   | { action: "next" }
   | { action: "previous" }
   | { action: "toggle-autodj" }

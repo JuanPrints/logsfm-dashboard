@@ -14,6 +14,8 @@ async function startRadioEngine() {
   const engine = getRadioEngine();
   await engine.init();
 
+  setInterval(() => engine.ensureMountAlive(), 15000);
+
   setInterval(async () => {
     try {
       const host = process.env.ICECAST_HOST ?? "localhost";
@@ -30,7 +32,7 @@ async function startRadioEngine() {
             s.server_name?.includes(mount.replace("/", "")),
         );
         if (match?.listeners != null) {
-          await engine.setListeners(parseInt(String(match.listeners), 10));
+          engine.setListeners(parseInt(String(match.listeners), 10));
         }
         engine.syncIcecastStatus(Boolean(match), true);
       } else {

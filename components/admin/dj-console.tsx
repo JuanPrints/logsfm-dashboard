@@ -6,8 +6,12 @@ import { SongLibraryPanel } from "@/components/admin/song-library-panel";
 import { MixerPanel } from "@/components/admin/mixer-panel";
 import { HistoryPanel } from "@/components/admin/history-panel";
 import { StreamDiagnostics } from "@/components/admin/stream-diagnostics";
+import { useEnginePoll, usePlaybackClock } from "@/lib/hooks/use-playback-clock";
 
 export function DjConsole() {
+  usePlaybackClock();
+  useEnginePoll(2000);
+
   return (
     <div className="flex h-[calc(100vh-2rem)] flex-col gap-3">
       <OnAirHeader />

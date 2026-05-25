@@ -6,12 +6,13 @@ import { AlertTriangle } from "lucide-react";
 export function StreamDiagnostics() {
   const { stream, queue, playback } = useRadioStore();
 
-  if (stream.status === "online") return null;
+  if (stream.status === "online" || stream.status === "connecting") return null;
 
   const hints: string[] = [];
   if (queue.length === 0) hints.push("La cola está vacía — carga una playlist o agrega canciones");
   if (playback === "stopped" && queue.length > 0)
-    hints.push("Tienes canciones en cola — pulsa ▶ Play para emitir");
+    hints.push("Tienes canciones en cola — pulsa ▶ Play para emitir música");
+  hints.push("El stream debería reconectarse solo en unos segundos");
   hints.push("Verifica ICECAST_PASSWORD en .env = source-password en icecast.xml");
   hints.push("Icecast debe estar corriendo: systemctl status icecast2");
 

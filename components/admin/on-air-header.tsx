@@ -11,9 +11,11 @@ import {
   Shuffle,
   ListMusic,
   Radio,
+  Info,
 } from "lucide-react";
-import { cn, formatDuration } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useRadioStore } from "@/lib/store/radio-store";
+import { NowPlayingDeck } from "@/components/admin/now-playing-deck";
 
 interface Playlist {
   id: string;
@@ -24,13 +26,13 @@ interface Playlist {
 export function OnAirHeader() {
   const {
     playback,
-    nowPlaying,
     stream,
     autoDj,
     shuffle,
     queue,
+    pending,
     sendCommand,
-    refresh,
+    radioAction,
   } = useRadioStore();
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [selectedPl, setSelectedPl] = useState("");
@@ -50,18 +52,14 @@ export function OnAirHeader() {
 
   const loadPlaylist = async (play = false) => {
     if (!selectedPl) return alert("Selecciona una playlist");
-    const res = await fetch("/api/admin/radio", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "load-playlist",
-        playlistId: selectedPl,
-        play,
-      }),
-    });
-    const json = await res.json();
-    if (!json.success) alert(json.error);
-    else await refresh();
+    try {
+      await radioAction(
+        { action: "load-playlist", playlistId: selectedPl, play },
+        play ? { playback: "playing", stream: { ...stream, status: "connecting" } } : undefined,
+      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Error al cargar playlist");
+    }
   };
 
   const handlePlay = async () => {
@@ -80,12 +78,11 @@ export function OnAirHeader() {
   };
 
   const handleStop = async () => {
-    await fetch("/api/admin/radio", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "stop" }),
-    });
-    await refresh();
+    try {
+      await sendCommand({ action: "stop" });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Error al detener");
+    }
   };
 
   return (
@@ -109,43 +106,46 @@ export function OnAirHeader() {
         </span>
       </div>
 
-      <div className="flex flex-wrap items-center gap-4 p-4">
-        <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-background">
-          {nowPlaying?.coverUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={nowPlaying.coverUrl} alt="" className="h-full w-full object-cover" />
-          ) : (
-            <span className="text-2xl text-muted">♪</span>
-          )}
-        </div>
+      <div className="flex items-center gap-2 border-b border-border/50 bg-accent/5 px-4 py-2 text-[11px] text-muted">
+        <Info className="h-3.5 w-3.5 shrink-0 text-accent" />
+        Recargar esta página no detiene la emisión — el motor corre en el servidor.
+      </div>
 
-        <div className="min-w-[180px] flex-1">
-          <p className="truncate text-lg font-bold">
-            {nowPlaying?.title ?? "Sin reproducción"}
-          </p>
-          <p className="truncate text-sm text-muted">
-            {nowPlaying?.artist ?? "Selecciona canciones o carga una playlist"}
-          </p>
-          {nowPlaying && (
-            <div className="mt-1 flex gap-2 text-[10px] text-muted">
-              <span>{formatDuration(nowPlaying.elapsed)}</span>
-              <span>/</span>
-              <span>{formatDuration(nowPlaying.duration)}</span>
-            </div>
-          )}
-        </div>
+      <div className="flex flex-wrap items-center gap-4 p-4">
+        <NowPlayingDeck />
 
         <div className="flex items-center gap-1">
-          <button type="button" onClick={() => sendCommand({ action: "previous" })} className="dj-btn dj-btn-action p-2">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => sendCommand({ action: "previous" })}
+            className="dj-btn dj-btn-action p-2 disabled:opacity-50"
+          >
             <SkipBack className="h-4 w-4" />
           </button>
-          <button type="button" onClick={handlePlay} className="dj-btn dj-btn-play px-4 py-2">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={handlePlay}
+            className="dj-btn dj-btn-play px-4 py-2 disabled:opacity-50"
+          >
             {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
           </button>
-          <button type="button" onClick={() => sendCommand({ action: "next" })} className="dj-btn dj-btn-action p-2">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => sendCommand({ action: "next" })}
+            className="dj-btn dj-btn-action p-2 disabled:opacity-50"
+          >
             <SkipForward className="h-4 w-4" />
           </button>
-          <button type="button" onClick={handleStop} className="dj-btn dj-btn-stop p-2" title="Detener stream">
+          <button
+            type="button"
+            disabled={pending}
+            onClick={handleStop}
+            className="dj-btn dj-btn-stop p-2 disabled:opacity-50"
+            title="Detener música (el stream sigue conectado)"
+          >
             <Square className="h-4 w-4" />
           </button>
         </div>
@@ -153,15 +153,17 @@ export function OnAirHeader() {
         <div className="flex flex-wrap items-center gap-2 border-l border-border pl-4">
           <button
             type="button"
+            disabled={pending}
             onClick={() => sendCommand({ action: "toggle-autodj" })}
-            className={cn("dj-btn text-xs", autoDj ? "bg-accent/20 text-accent" : "dj-btn-action")}
+            className={cn("dj-btn text-xs disabled:opacity-50", autoDj ? "bg-accent/20 text-accent" : "dj-btn-action")}
           >
             <Zap className="h-3 w-3" /> AutoDJ
           </button>
           <button
             type="button"
+            disabled={pending}
             onClick={() => sendCommand({ action: "toggle-shuffle" })}
-            className={cn("dj-btn text-xs", shuffle ? "bg-accent/20 text-accent" : "dj-btn-action")}
+            className={cn("dj-btn text-xs disabled:opacity-50", shuffle ? "bg-accent/20 text-accent" : "dj-btn-action")}
           >
             <Shuffle className="h-3 w-3" />
           </button>

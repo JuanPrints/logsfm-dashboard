@@ -19,7 +19,7 @@ export function SongLibraryPanel() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
-  const { sendCommand, refresh } = useRadioStore();
+  const { sendCommand, radioAction } = useRadioStore();
 
   useEffect(() => {
     fetch("/api/admin/songs")
@@ -38,18 +38,29 @@ export function SongLibraryPanel() {
 
   const addToQueue = async (songId: string) => {
     await sendCommand({ action: "add-to-queue", songId });
-    await refresh();
   };
 
-  const playNow = async (songId: string) => {
-    const res = await fetch("/api/admin/radio", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "play-now", songId }),
-    });
-    const json = await res.json();
-    if (!json.success) alert(json.error);
-    else await refresh();
+  const playNow = async (song: Song) => {
+    try {
+      await radioAction(
+        { action: "play-now", songId: song.id },
+        {
+          playback: "playing",
+          nowPlaying: {
+            id: song.id,
+            title: song.title,
+            artist: song.artist,
+            coverUrl: song.cover_url,
+            duration: song.duration,
+            elapsed: 0,
+            startedAt: new Date().toISOString(),
+          },
+          stream: { status: "connecting", listeners: 0, peakListeners: 0, bitrate: 128, format: "mp3", uptime: 0, mountPoint: "/stream" },
+        },
+      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Error al reproducir");
+    }
   };
 
   return (
@@ -114,7 +125,7 @@ export function SongLibraryPanel() {
                     <div className="flex gap-0.5">
                       <button
                         type="button"
-                        onClick={() => playNow(song.id)}
+                        onClick={() => playNow(song)}
                         className="rounded p-1 text-success hover:bg-success/10"
                         title="Reproducir ahora"
                       >
