@@ -72,6 +72,7 @@ export interface RadioSettingsRow {
   auto_dj: boolean;
   shuffle: boolean;
   repeat_mode?: string;
+  music_volume?: number;
   is_live_dj: boolean;
   mic_enabled: boolean;
   current_show_name: string | null;

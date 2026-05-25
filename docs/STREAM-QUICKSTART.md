@@ -42,7 +42,17 @@ Referencia de una página. Guía completa: [APP-STREAM.md](./APP-STREAM.md).
 
 1. Admin → **Stop** → esperar 2 s → **Play**
 2. Abrir stream en **pestaña nueva**
-3. `pm2 logs logsfm-dashboard --lines 50` → buscar `[FFmpeg] → music:`
+3. `pm2 logs logsfm-dashboard --lines 50` → buscar `[Pipeline] → música:`
+
+### Errores EPIPE / PM2 reiniciando mucho
+
+| Log | Qué hacer |
+|-----|-----------|
+| `write EPIPE` / `uncaughtException` | Actualiza código y `pm2 restart logsfm-dashboard` (versión con pipeline seguro) |
+| `[Pipeline] Encoder cerrado code=224` | Icecast cerró la fuente; el watchdog remonta en ~60 s o pulsa **Play** |
+| `logsfm-dashboard` con muchos **↺** | No uses `pm2 restart all`; revisa `pm2 logs` tras deploy |
+
+Logs sanos: una línea `[Pipeline] Conectando encoder` al arrancar, luego `[Pipeline] → música:` al cambiar pista **sin** ráfagas cada segundo.
 
 ---
 
@@ -116,6 +126,22 @@ cd ~/apps/logsfm-dashboard
 git pull origin master
 npm run build
 pm2 restart logsfm-dashboard
+pm2 logs logsfm-dashboard --lines 80
 ```
 
 **No uses `pm2 restart all`** — solo `pm2 restart logsfm-dashboard` para no tumbar otros procesos.
+
+### Checklist post-deploy
+
+- [ ] `pm2 list` → `logsfm-dashboard` online, **↺** no sube solo
+- [ ] Cargar y Play → título visible en consola DJ
+- [ ] Stop → oyente oye silencio, UI en stopped
+- [ ] Next → cambia canción en admin e Icecast `server_name`
+- [ ] Fin de canción → siguiente o silencio, sin bucle de errores en logs
+
+### SQL opcional (volumen persistido)
+
+```sql
+-- scripts/add-music-volume.sql
+ALTER TABLE radio_settings ADD COLUMN IF NOT EXISTS music_volume INTEGER DEFAULT 85;
+```

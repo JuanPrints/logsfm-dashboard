@@ -102,18 +102,32 @@ export const useRadioStore = create<RadioStore>((set, get) => ({
   },
 
   radioAction: async (body, optimistic) => {
+    const snapshot = optimistic ? { ...get() } : null;
     if (optimistic) set({ ...optimistic, pending: true });
     else set({ pending: true });
 
-    const res = await fetch("/api/admin/radio", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const json = await res.json();
-    set({ pending: false });
-    if (!json.success) throw new Error(json.error);
-    set({ ...json.data, connected: true });
+    try {
+      const res = await fetch("/api/admin/radio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error);
+      set({ ...json.data, connected: true, pending: false });
+    } catch (err) {
+      set({ pending: false });
+      if (snapshot) {
+        set({
+          playback: snapshot.playback,
+          nowPlaying: snapshot.nowPlaying,
+          queue: snapshot.queue,
+          stream: snapshot.stream,
+        });
+      }
+      await get().refresh();
+      throw err;
+    }
   },
 
   sendCommand: async (command) => {

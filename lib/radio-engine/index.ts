@@ -35,6 +35,7 @@ export class RadioEngine extends EventEmitter {
   private ducking = true;
   private repeatMode: RepeatMode = "off";
   private handlingTrackEnd = false;
+  private engineLock: Promise<void> = Promise.resolve();
 
   constructor() {
     super();
@@ -53,12 +54,25 @@ export class RadioEngine extends EventEmitter {
     });
   }
 
+  private runLocked<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.engineLock.then(() => fn());
+    this.engineLock = next.then(
+      () => {},
+      () => {},
+    );
+    return next;
+  }
+
   async init() {
     const settings = await getRadioSettings();
     this.playbackState = settings.playback_state as PlaybackState;
     this.micEnabled = settings.mic_enabled;
     this.isLiveDj = settings.is_live_dj;
     this.repeatMode = parseRepeatMode(settings.repeat_mode);
+    const storedVol = settings.music_volume;
+    if (typeof storedVol === "number" && storedVol >= 0 && storedVol <= 100) {
+      this.musicVolume = storedVol;
+    }
 
     if (settings.current_song_id) {
       try {
@@ -78,23 +92,30 @@ export class RadioEngine extends EventEmitter {
       }
     }
 
+    if (this.playbackState === "playing" && !this.nowPlaying) {
+      this.playbackState = "paused";
+      await updateRadioSettings({ playback_state: "paused", current_song_id: null });
+    }
+
     this.broadcastEnabled = true;
     this.setStreamStatus("connecting");
 
-    if (this.playbackState === "playing" && this.nowPlaying) {
-      try {
-        await this.startMusicStream();
-        this.startedAt = new Date(this.nowPlaying.startedAt);
-        this.startElapsedTimer();
-      } catch (err) {
-        console.error("[RadioEngine] init música falló:", err);
+    await this.runLocked(async () => {
+      if (this.playbackState === "playing" && this.nowPlaying) {
+        try {
+          await this.startMusicStream();
+          this.startedAt = new Date(this.nowPlaying!.startedAt);
+          this.startElapsedTimer();
+        } catch (err) {
+          console.error("[RadioEngine] init música falló:", err);
+          await this.startSilenceHolder();
+          this.playbackState = "paused";
+          await updateRadioSettings({ playback_state: "paused" });
+        }
+      } else {
         await this.startSilenceHolder();
-        this.playbackState = "paused";
-        await updateRadioSettings({ playback_state: "paused" });
       }
-    } else {
-      await this.startSilenceHolder();
-    }
+    });
   }
 
   /** Watchdog — remonta encoder si se cayó (sin matar mount en cada canción) */
@@ -102,13 +123,15 @@ export class RadioEngine extends EventEmitter {
     if (!this.broadcastEnabled) return;
     if (this.pipeline.isConnected()) return;
 
-    console.log("[RadioEngine] Watchdog: reconectando encoder...");
-    this.setStreamStatus("connecting");
-    if (this.playbackState === "playing" && this.nowPlaying) {
-      await this.startMusicStream();
-    } else {
-      await this.startSilenceHolder();
-    }
+    return this.runLocked(async () => {
+      console.log("[RadioEngine] Watchdog: reconectando encoder...");
+      this.setStreamStatus("connecting");
+      if (this.playbackState === "playing" && this.nowPlaying) {
+        await this.startMusicStream();
+      } else {
+        await this.startSilenceHolder();
+      }
+    });
   }
 
   async ensureBroadcastOnline() {
@@ -174,6 +197,10 @@ export class RadioEngine extends EventEmitter {
   }
 
   async play() {
+    return this.runLocked(() => this.playInternal());
+  }
+
+  private async playInternal() {
     if (this.playbackState === "playing") return;
 
     this.broadcastEnabled = true;
@@ -192,65 +219,93 @@ export class RadioEngine extends EventEmitter {
     this.nowPlaying.startedAt = this.startedAt.toISOString();
     this.nowPlaying.elapsed = 0;
     this.startElapsedTimer();
-    await updateRadioSettings({ playback_state: "playing" });
+    await updateRadioSettings({
+      playback_state: "playing",
+      current_song_id: this.nowPlaying.id,
+    });
     this.emitState();
   }
 
   async pause() {
-    this.playbackState = "paused";
-    this.stopElapsedTimer();
-    await this.startSilenceHolder();
-    await updateRadioSettings({ playback_state: "paused" });
-    this.emitState();
+    return this.runLocked(async () => {
+      this.playbackState = "paused";
+      this.stopElapsedTimer();
+      await this.startSilenceHolder();
+      await updateRadioSettings({ playback_state: "paused" });
+      this.emitState();
+    });
   }
 
   async stop() {
-    this.playbackState = "stopped";
-    this.nowPlaying = null;
-    this.stopElapsedTimer();
-    await updateRadioSettings({ playback_state: "stopped", current_song_id: null });
-    await this.startSilenceHolder();
-    this.emitState();
+    return this.runLocked(async () => {
+      this.playbackState = "stopped";
+      this.nowPlaying = null;
+      this.stopElapsedTimer();
+      await updateRadioSettings({ playback_state: "stopped", current_song_id: null });
+      await this.pipeline.stopHard();
+      this.setStreamStatus("online");
+      this.emitState();
+    });
   }
 
   async loadPlaylist(playlistId: string, autoPlay = false) {
-    const { setActivePlaylist } = await import("@/lib/db/playlists");
-    const pl = await setActivePlaylist(playlistId);
-    await fillQueueFromPlaylist(playlistId, pl.shuffle);
-    this.nowPlaying = null;
-    if (autoPlay) await this.play();
-    else this.emitState();
+    return this.runLocked(async () => {
+      const { setActivePlaylist } = await import("@/lib/db/playlists");
+      const pl = await setActivePlaylist(playlistId);
+      await fillQueueFromPlaylist(playlistId, pl.shuffle);
+      this.nowPlaying = null;
+
+      const queue = await getQueue();
+      if (autoPlay) {
+        if (queue.length === 0) {
+          throw new Error("La playlist no tiene canciones.");
+        }
+        await this.playInternal();
+      } else {
+        this.emitState();
+      }
+    });
   }
 
   async playNow(songId: string) {
-    const song = await getSong(songId);
-    const { clearQueue, addToQueue } = await import("@/lib/db/queue");
-    await clearQueue();
-    await addToQueue(songId);
+    return this.runLocked(async () => {
+      const song = await getSong(songId);
+      const { clearQueue, addToQueue } = await import("@/lib/db/queue");
+      await clearQueue();
+      await addToQueue(songId);
 
-    this.broadcastEnabled = true;
-    this.nowPlaying = {
-      id: song.id,
-      title: song.title,
-      artist: song.artist,
-      coverUrl: song.cover_url,
-      duration: song.duration,
-      elapsed: 0,
-      startedAt: new Date().toISOString(),
-    };
+      this.broadcastEnabled = true;
+      this.nowPlaying = {
+        id: song.id,
+        title: song.title,
+        artist: song.artist,
+        coverUrl: song.cover_url,
+        duration: song.duration,
+        elapsed: 0,
+        startedAt: new Date().toISOString(),
+      };
 
-    await updateRadioSettings({ current_song_id: song.id, playback_state: "playing" });
-    await this.startMusicStream();
-    this.playbackState = "playing";
-    this.startedAt = new Date();
-    this.startElapsedTimer();
-    this.emitState();
+      await updateRadioSettings({ current_song_id: song.id, playback_state: "playing" });
+      await this.startMusicStream();
+      this.playbackState = "playing";
+      this.startedAt = new Date();
+      this.startElapsedTimer();
+      this.emitState();
+    });
   }
 
-  setVolume(musicVolume: number, micVolume: number, ducking: boolean) {
+  async setVolume(musicVolume: number, micVolume: number, ducking: boolean) {
     this.musicVolume = musicVolume;
     this.micVolume = micVolume;
     this.ducking = ducking;
+
+    await updateRadioSettings({ music_volume: musicVolume }).catch(() => {});
+
+    if (this.playbackState === "playing" && this.pipeline.getMode() === "music") {
+      await this.runLocked(() =>
+        this.pipeline.restartCurrentDecoder(musicVolume / 100),
+      );
+    }
   }
 
   private async ensureQueueFromActivePlaylist() {
@@ -271,44 +326,49 @@ export class RadioEngine extends EventEmitter {
   }
 
   async next() {
-    if (this.nowPlaying) {
-      await addToHistory({
-        song_id: this.nowPlaying.id,
-        title: this.nowPlaying.title,
-        artist: this.nowPlaying.artist,
-        cover_url: this.nowPlaying.coverUrl,
-        duration: this.nowPlaying.duration,
-      });
-    }
+    return this.runLocked(async () => {
+      if (this.nowPlaying) {
+        await addToHistory({
+          song_id: this.nowPlaying.id,
+          title: this.nowPlaying.title,
+          artist: this.nowPlaying.artist,
+          cover_url: this.nowPlaying.coverUrl,
+          duration: this.nowPlaying.duration,
+        });
+      }
 
-    await this.loadNextTrack();
-    if (this.playbackState === "playing" && this.nowPlaying) {
-      this.startedAt = new Date();
-      this.nowPlaying.startedAt = this.startedAt.toISOString();
-      this.nowPlaying.elapsed = 0;
-      await this.startMusicStream();
-    }
-    this.emitState();
+      await this.loadNextTrack();
+      if (this.playbackState === "playing" && this.nowPlaying) {
+        this.startedAt = new Date();
+        this.nowPlaying.startedAt = this.startedAt.toISOString();
+        this.nowPlaying.elapsed = 0;
+        await this.startMusicStream();
+      }
+      this.emitState();
+    });
   }
 
   async replayCurrent() {
-    if (!this.nowPlaying) return;
-    this.startedAt = new Date();
-    this.nowPlaying.startedAt = this.startedAt.toISOString();
-    this.nowPlaying.elapsed = 0;
-    if (this.playbackState !== "playing") {
-      this.playbackState = "playing";
-      await updateRadioSettings({ playback_state: "playing" });
-      this.startElapsedTimer();
-    }
-    await this.startMusicStream();
-    this.emitState();
+    return this.runLocked(async () => {
+      if (!this.nowPlaying) return;
+      this.startedAt = new Date();
+      this.nowPlaying.startedAt = this.startedAt.toISOString();
+      this.nowPlaying.elapsed = 0;
+      if (this.playbackState !== "playing") {
+        this.playbackState = "playing";
+        await updateRadioSettings({ playback_state: "playing" });
+        this.startElapsedTimer();
+      }
+      await this.startMusicStream();
+      this.emitState();
+    });
   }
 
   private async onTrackEnded() {
     if (this.handlingTrackEnd) return;
     this.handlingTrackEnd = true;
     try {
+      await this.runLocked(async () => {
       if (this.nowPlaying) {
         await addToHistory({
           song_id: this.nowPlaying.id,
@@ -347,31 +407,34 @@ export class RadioEngine extends EventEmitter {
         await this.startSilenceHolder();
       }
       this.emitState();
+      });
     } finally {
       this.handlingTrackEnd = false;
     }
   }
 
   async previous() {
-    const history = await import("@/lib/db/history").then((m) => m.getHistory(2));
-    if (history.length < 2) return;
+    return this.runLocked(async () => {
+      const history = await import("@/lib/db/history").then((m) => m.getHistory(2));
+      if (history.length < 2) return;
 
-    const prev = history[1];
-    this.nowPlaying = {
-      id: prev.song_id,
-      title: prev.title,
-      artist: prev.artist,
-      coverUrl: prev.cover_url,
-      duration: prev.duration,
-      elapsed: 0,
-      startedAt: new Date().toISOString(),
-    };
+      const prev = history[1];
+      this.nowPlaying = {
+        id: prev.song_id,
+        title: prev.title,
+        artist: prev.artist,
+        coverUrl: prev.cover_url,
+        duration: prev.duration,
+        elapsed: 0,
+        startedAt: new Date().toISOString(),
+      };
 
-    if (this.playbackState === "playing") {
-      this.startedAt = new Date();
-      await this.startMusicStream();
-    }
-    this.emitState();
+      if (this.playbackState === "playing") {
+        this.startedAt = new Date();
+        await this.startMusicStream();
+      }
+      this.emitState();
+    });
   }
 
   async toggleAutoDj() {

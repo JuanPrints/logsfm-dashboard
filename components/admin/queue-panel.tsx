@@ -1,11 +1,11 @@
 "use client";
 
 import { Trash2, ListX, Play } from "lucide-react";
-import { formatDuration } from "@/lib/utils";
+import { cn, formatDuration } from "@/lib/utils";
 import { useRadioStore } from "@/lib/store/radio-store";
 
 export function QueuePanel() {
-  const { queue, sendCommand, radioAction } = useRadioStore();
+  const { queue, nowPlaying, playback, sendCommand, radioAction } = useRadioStore();
 
   const clearQueue = async () => {
     await radioAction({ action: "clear-queue" });
@@ -43,10 +43,16 @@ export function QueuePanel() {
             </p>
           </div>
         ) : (
-          queue.map((item, index) => (
+          queue.map((item, index) => {
+            const isCurrent =
+              playback === "playing" && nowPlaying?.id === item.songId;
+            return (
             <div
               key={item.id}
-              className="group flex items-center gap-2 border-b border-border/50 px-2 py-1.5 text-xs hover:bg-card-hover"
+              className={cn(
+                "group flex items-center gap-2 border-b border-border/50 px-2 py-1.5 text-xs hover:bg-card-hover",
+                isCurrent && "bg-accent/10 border-l-2 border-l-accent",
+              )}
             >
               <span className="w-5 text-center font-mono text-muted">{index + 1}</span>
               <div className="min-w-0 flex-1">
@@ -72,7 +78,8 @@ export function QueuePanel() {
                 <Trash2 className="h-3 w-3" />
               </button>
             </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

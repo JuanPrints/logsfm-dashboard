@@ -65,6 +65,15 @@ async function main() {
     console.error("[unhandledRejection]", err);
   });
 
+  process.on("uncaughtException", (err) => {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EPIPE" || code === "ECONNRESET") {
+      console.warn("[uncaughtException] pipe roto (ignorado):", code);
+      return;
+    }
+    console.error("[uncaughtException]", err);
+  });
+
   createServer((req, res) => {
     handle(req, res);
   }).listen(port, hostname, () => {

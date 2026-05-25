@@ -64,7 +64,11 @@ export async function POST(request: Request) {
         await engine.playNow(body.songId);
         break;
       case "set-volume":
-        engine.setVolume(body.musicVolume ?? 85, body.micVolume ?? 100, body.ducking ?? true);
+        await engine.setVolume(
+          body.musicVolume ?? 85,
+          body.micVolume ?? 100,
+          body.ducking ?? true,
+        );
         break;
       case "add-to-queue":
         await addToQueue(body.songId);

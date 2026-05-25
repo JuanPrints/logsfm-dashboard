@@ -55,10 +55,27 @@ export function OnAirHeader() {
 
   const loadPlaylist = async (play = false) => {
     if (!selectedPl) return alert("Selecciona una playlist");
+    const optimisticNowPlaying = play
+      ? {
+          id: "loading",
+          title: "Cargando playlist…",
+          artist: "",
+          duration: 0,
+          elapsed: 0,
+          startedAt: new Date().toISOString(),
+        }
+      : null;
+
     try {
       await radioAction(
         { action: "load-playlist", playlistId: selectedPl, play },
-        play ? { playback: "playing", stream: { ...stream, status: "connecting" } } : undefined,
+        play
+          ? {
+              playback: "playing",
+              nowPlaying: optimisticNowPlaying,
+              stream: { ...stream, status: "connecting" },
+            }
+          : undefined,
       );
     } catch (e) {
       alert(e instanceof Error ? e.message : "Error al cargar playlist");
@@ -147,7 +164,7 @@ export function OnAirHeader() {
             disabled={pending}
             onClick={handleStop}
             className="dj-btn dj-btn-stop p-2 disabled:opacity-50"
-            title="Detener música (el stream sigue conectado)"
+            title="Detener música — el stream sigue en silencio para oyentes"
           >
             <Square className="h-4 w-4" />
           </button>
