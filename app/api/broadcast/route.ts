@@ -3,6 +3,7 @@ import { getRadioEngine } from "@/lib/radio-engine";
 import { getRadioSettings } from "@/lib/db/settings";
 import { buildBroadcastInfo } from "@/lib/radio/broadcast-info";
 
+/** Estado completo de emisión para apps oyentes (now playing + programa + display) */
 export async function GET() {
   try {
     const engine = getRadioEngine();

@@ -1,4 +1,4 @@
-import { spawn, execSync, type ChildProcessWithoutNullStreams } from "child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { EventEmitter } from "events";
 import path from "path";
 import fs from "fs";
@@ -12,7 +12,6 @@ import { getActiveShowNow } from "@/lib/db/shows";
 import { getMatuClient } from "@/lib/db/matu";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads", "songs");
-const SILENCE_FILE = path.join(process.cwd(), "uploads", "silence.mp3");
 
 type StreamMode = "silence" | "music";
 
@@ -39,19 +38,6 @@ export class RadioEngine extends EventEmitter {
     super();
     if (!fs.existsSync(UPLOADS_DIR)) {
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-    }
-    this.ensureSilenceFile();
-  }
-
-  private ensureSilenceFile() {
-    if (fs.existsSync(SILENCE_FILE)) return;
-    try {
-      execSync(
-        `ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 2 -c:a libmp3lame -b:a 128k "${SILENCE_FILE}"`,
-        { stdio: "ignore" },
-      );
-    } catch (err) {
-      console.error("[RadioEngine] No se pudo crear silence.mp3:", err);
     }
   }
 
@@ -119,51 +105,49 @@ export class RadioEngine extends EventEmitter {
     return `icecast://source:${password}@${host}:${port}${mount}`;
   }
 
-  private icecastTail(copyMode = false) {
+  private icecastTail(opts?: { streamTitle?: string; streamDescription?: string }) {
     const bitrate = process.env.ICECAST_BITRATE ?? "128";
-    const tail = [
-      "-content_type", "audio/mpeg",
-      "-f", "mp3",
-      "-ice_name", "LogsFM",
-      "-legacy_icecast", "1",
-      this.icecastOutput(),
-    ];
-    if (copyMode) return tail;
-    return [
+    const tail: string[] = [
       "-acodec", "libmp3lame",
-      "-ab", `${bitrate}k`,
+      "-b:a", `${bitrate}k`,
       "-ar", "44100",
       "-ac", "2",
       "-write_xing", "0",
-      ...tail,
+      "-content_type", "audio/mpeg",
+      "-f", "mp3",
+      "-ice_name", opts?.streamTitle ?? "LogsFM",
+      "-legacy_icecast", "1",
     ];
-  }
-
-  private encodeArgs(extraInput: string[]) {
-    return [...extraInput, ...this.icecastTail(false)];
-  }
-
-  private musicStreamArgs(inputFile: string, filePath: string) {
-    const isLocalMp3 =
-      !inputFile.startsWith("http") && filePath.toLowerCase().endsWith(".mp3");
-
-    // Passthrough MP3 — más compatible con Icecast y navegadores
-    if (isLocalMp3) {
-      return [
-        "-re",
-        "-i", inputFile,
-        "-map", "0:a",
-        "-c:a", "copy",
-        ...this.icecastTail(true),
-      ];
+    if (opts?.streamDescription) {
+      tail.push("-ice_description", opts.streamDescription);
     }
+    tail.push(this.icecastOutput());
+    return tail;
+  }
 
+  private encodeArgs(extraInput: string[], meta?: { streamTitle?: string; streamDescription?: string }) {
+    return [...extraInput, ...this.icecastTail(meta)];
+  }
+
+  private musicStreamArgs(inputFile: string) {
     const volume = (this.musicVolume / 100).toFixed(2);
-    return this.encodeArgs([
-      "-re",
-      "-i", inputFile,
-      "-af", `volume=${volume}`,
-    ]);
+    const title = this.nowPlaying?.title ?? "LogsFM";
+    const artist = this.nowPlaying?.artist?.trim() || "LogsFM";
+    const description = `${artist} - ${title}`;
+
+    return this.encodeArgs(
+      [
+        "-re",
+        "-probesize", "32",
+        "-analyzeduration", "500000",
+        "-i", inputFile,
+        "-map", "0:a:0",
+        "-af", `volume=${volume}`,
+        "-metadata", `title=${title}`,
+        "-metadata", `artist=${artist}`,
+      ],
+      { streamTitle: title, streamDescription: description },
+    );
   }
 
   private async killFfmpeg() {
@@ -251,20 +235,14 @@ export class RadioEngine extends EventEmitter {
   }
 
   async startSilenceHolder() {
-    this.ensureSilenceFile();
-    const args = fs.existsSync(SILENCE_FILE)
-      ? [
-          "-re",
-          "-stream_loop", "-1",
-          "-i", SILENCE_FILE,
-          "-c:a", "copy",
-          ...this.icecastTail(true),
-        ]
-      : this.encodeArgs([
-          "-re",
-          "-f", "lavfi",
-          "-i", "anullsrc=r=44100:cl=stereo",
-        ]);
+    const args = this.encodeArgs(
+      [
+        "-re",
+        "-f", "lavfi",
+        "-i", "anullsrc=r=44100:cl=stereo",
+      ],
+      { streamTitle: "LogsFM", streamDescription: "Radio en vivo" },
+    );
 
     await this.launchFfmpeg(args, "silence");
     this.setStreamStatus("online");
@@ -283,7 +261,7 @@ export class RadioEngine extends EventEmitter {
       throw new Error(`Archivo MP3 no encontrado: ${path.basename(song.file_path)}`);
     }
 
-    const args = this.musicStreamArgs(inputFile, song.file_path);
+    const args = this.musicStreamArgs(inputFile);
     await this.launchFfmpeg(args, "music");
   }
 

@@ -79,6 +79,8 @@ Esto levanta:
 | `GET /api/playlists` | Listado de playlists |
 | `GET /api/playlists?id=UUID` | Playlist con canciones |
 
+Guía para integrar el stream en tu app de oyentes: **[docs/APP-STREAM.md](./docs/APP-STREAM.md)**
+
 ## Realtime (MatuDB — sin Socket.io propio)
 
 MatuDB ya incluye Socket.io. Activa Realtime en estas tablas:

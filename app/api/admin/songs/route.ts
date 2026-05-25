@@ -67,7 +67,7 @@ export async function POST(request: Request) {
 
     const song = await createSong({
       title: metadata.common?.title ?? file.name.replace(/\.mp3$/i, ""),
-      artist: metadata.common?.artist ?? "Unknown",
+      artist: metadata.common?.artist?.trim() || metadata.common?.albumartist?.trim() || "",
       album: metadata.common?.album ?? null,
       duration: Math.round(metadata.format?.duration ?? 0),
       cover_url: coverUrl,
