@@ -13,8 +13,8 @@ function sleep(ms: number) {
 }
 
 /**
- * Un solo FFmpeg conectado a Icecast (encoder).
- * Las canciones se decodifican a PCM y entran por stdin — sin desconectar oyentes.
+ * Encoder permanente + decoders PCM (modo avanzado).
+ * Requiere RADIO_STREAM_MODE=pcm — por defecto se usa DirectIcecastStream.
  */
 export class IcecastPipeline {
   private encoder: ChildProcess | null = null;
@@ -24,12 +24,15 @@ export class IcecastPipeline {
   private encoderUp = false;
   private stdinBroken = false;
   private switchQueue: Promise<void> = Promise.resolve();
+  private ensurePromise: Promise<void> | null = null;
+  private reconnectAfter = 0;
   private onTrackEnd: (() => void) | null = null;
   private lastMusic: {
     filePath: string;
     meta: { title: string; artist: string };
     volume: number;
   } | null = null;
+  private lastPlayKey = "";
 
   constructor(
     private icecastUrl: string,
@@ -65,10 +68,29 @@ export class IcecastPipeline {
   }
 
   private async ensureEncoder(meta?: { title?: string; description?: string }) {
+    if (this.encoderAlive() && this.decoder) return;
     if (this.encoderAlive()) return;
 
-    await this.stopDecoderInternal();
+    if (this.ensurePromise) {
+      await this.ensurePromise;
+      if (this.encoderAlive()) return;
+    }
 
+    const waitMs = this.reconnectAfter - Date.now();
+    if (waitMs > 0) {
+      console.log(`[Pipeline] Esperando ${waitMs}ms antes de reconectar...`);
+      await sleep(waitMs);
+    }
+
+    this.ensurePromise = this.connectEncoder(meta);
+    try {
+      await this.ensurePromise;
+    } finally {
+      this.ensurePromise = null;
+    }
+  }
+
+  private async connectEncoder(meta?: { title?: string; description?: string }) {
     if (this.encoder) {
       try {
         this.encoder.stdin?.destroy();
@@ -79,7 +101,7 @@ export class IcecastPipeline {
       this.encoder = null;
       this.encoderUp = false;
       this.stdinBroken = false;
-      await sleep(1500);
+      await sleep(2000);
     }
 
     const title = meta?.title ?? "LogsFM";
@@ -87,6 +109,7 @@ export class IcecastPipeline {
       "-hide_banner",
       "-loglevel",
       "warning",
+      "-re",
       "-f",
       "s16le",
       "-ar",
@@ -125,9 +148,10 @@ export class IcecastPipeline {
       if (
         msg.includes("403") ||
         msg.includes("401") ||
-        msg.includes("Connection refused")
+        msg.includes("Connection refused") ||
+        msg.includes("Broken pipe")
       ) {
-        console.error("[Pipeline encoder]", msg.slice(0, 250));
+        console.error("[Pipeline encoder]", msg.slice(0, 300));
       } else if (msg.includes("size=") || msg.includes("bitrate=")) {
         this.encoderUp = true;
       }
@@ -135,7 +159,6 @@ export class IcecastPipeline {
 
     enc.stdin?.on("error", (err) => {
       if (isPipeError(err)) {
-        console.warn("[Pipeline] encoder stdin error (ignorado):", (err as NodeJS.ErrnoException).code);
         this.stdinBroken = true;
       }
     });
@@ -146,28 +169,29 @@ export class IcecastPipeline {
       this.encoderUp = false;
       this.stdinBroken = true;
       this.mode = "offline";
+      this.reconnectAfter = Date.now() + 5000;
       void this.stopDecoderInternal();
     });
 
-    const ready = await this.waitEncoderReady(10_000);
+    const ready = await this.waitEncoderReady(12_000);
     if (!ready) {
-      console.error("[Pipeline] Encoder no conectó a Icecast a tiempo");
       try {
         enc.kill("SIGKILL");
       } catch {
         /* ok */
       }
       this.encoder = null;
+      this.reconnectAfter = Date.now() + 8000;
       throw new Error("No se pudo conectar el encoder a Icecast");
     }
+
+    await this.attachSilenceDecoder();
     this.mode = "silence";
   }
 
   private waitEncoderReady(timeoutMs: number): Promise<boolean> {
     const enc = this.encoder;
     if (!enc) return Promise.resolve(false);
-
-    if (this.encoderUp) return Promise.resolve(true);
 
     return new Promise((resolve) => {
       const done = (ok: boolean) => {
@@ -185,107 +209,15 @@ export class IcecastPipeline {
       };
 
       const timer = setTimeout(() => {
-        const alive = enc.exitCode === null && !enc.killed;
-        if (alive) this.encoderUp = true;
-        done(alive);
+        done(enc.exitCode === null && !enc.killed && this.encoderUp);
       }, timeoutMs);
 
       enc.stderr?.on("data", onData);
     });
   }
 
-  async playSilence() {
-    return this.enqueue(async () => {
-      await this.ensureEncoder({ title: "LogsFM", description: "Radio en vivo" });
-      await this.stopDecoderInternal();
-      this.lastMusic = null;
-
-      const dec = spawn(
-        "ffmpeg",
-        [
-          "-hide_banner",
-          "-loglevel",
-          "error",
-          "-re",
-          "-f",
-          "lavfi",
-          "-i",
-          "anullsrc=r=44100:cl=stereo",
-          "-f",
-          "s16le",
-          "-ar",
-          "44100",
-          "-ac",
-          "2",
-          "pipe:1",
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-
-      this.pipeDecoder(dec, "silence");
-      console.log("[Pipeline] → silencio continuo");
-    });
-  }
-
-  async playFile(
-    filePath: string,
-    meta: { title: string; artist: string },
-    volume = 0.85,
-  ) {
-    return this.enqueue(async () => {
-      const description = `${meta.artist} - ${meta.title}`;
-      await this.ensureEncoder({ title: meta.title, description });
-      await this.stopDecoderInternal();
-
-      this.lastMusic = { filePath, meta, volume };
-
-      const vol = volume.toFixed(2);
-      const dec = spawn(
-        "ffmpeg",
-        [
-          "-hide_banner",
-          "-loglevel",
-          "error",
-          "-re",
-          "-i",
-          filePath,
-          "-map",
-          "0:a:0",
-          "-af",
-          `volume=${vol}`,
-          "-f",
-          "s16le",
-          "-ar",
-          "44100",
-          "-ac",
-          "2",
-          "pipe:1",
-        ],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-
-      this.pipeDecoder(dec, "music");
-      console.log(`[Pipeline] → música: ${meta.title}`);
-    });
-  }
-
-  /** Corta música actual y pasa a silencio sin tumbar el encoder si sigue vivo. */
-  async stopHard() {
-    return this.enqueue(async () => {
-      this.lastMusic = null;
-      await this.stopDecoderInternal();
-      if (!this.encoderAlive()) {
-        await this.ensureEncoder({ title: "LogsFM", description: "Radio en vivo" });
-      }
-      await this.playSilenceInternal();
-    });
-  }
-
-  private async playSilenceInternal() {
-    await this.stopDecoderInternal();
-    this.lastMusic = null;
-
-    const dec = spawn(
+  private spawnSilenceDecoder() {
+    return spawn(
       "ffmpeg",
       [
         "-hide_banner",
@@ -306,90 +238,173 @@ export class IcecastPipeline {
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
-
-    this.pipeDecoder(dec, "silence");
-    console.log("[Pipeline] → silencio (stop)");
   }
 
-  /** Reinicia solo el decoder con nuevo volumen (encoder permanece). */
-  async restartCurrentDecoder(volume: number) {
-    if (!this.lastMusic || this.mode !== "music") return;
-    const { filePath, meta } = this.lastMusic;
-    this.lastMusic.volume = volume;
-    await this.playFile(filePath, meta, volume);
+  private spawnMusicDecoder(filePath: string, volume: number) {
+    const vol = volume.toFixed(2);
+    return spawn(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-re",
+        "-i",
+        filePath,
+        "-map",
+        "0:a:0",
+        "-af",
+        `volume=${vol}`,
+        "-f",
+        "s16le",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "pipe:1",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
   }
 
-  private pipeDecoder(dec: ChildProcess, mode: PipelineMode) {
-    this.decoder = dec;
-    this.mode = mode;
+  /** Engancha silencio sin dejar el stdin del encoder vacío. */
+  private async attachSilenceDecoder() {
+    const dec = this.spawnSilenceDecoder();
+    await this.swapDecoder(dec, "silence", false);
+  }
 
+  /**
+   * Conecta el decoder nuevo ANTES de cortar el anterior (sin hueco de PCM).
+   */
+  private async swapDecoder(
+    newDec: ChildProcess,
+    mode: PipelineMode,
+    triggerTrackEnd: boolean,
+  ) {
     const stdin = this.encoder?.stdin;
-    const stdout = dec.stdout;
+    const stdout = newDec.stdout;
 
     if (!stdin || !stdout || !this.encoderAlive()) {
-      dec.kill("SIGKILL");
-      return;
+      newDec.kill("SIGKILL");
+      throw new Error("Encoder no listo para recibir audio");
     }
 
+    const oldDec = this.decoder;
+    const oldStdout = oldDec?.stdout;
+
     const onStdinError = (err: NodeJS.ErrnoException) => {
-      if (isPipeError(err)) {
-        console.warn("[Pipeline] stdin EPIPE — encoder caído");
-        this.stdinBroken = true;
-        this.detachPipe(dec, stdout, stdin, onStdinError, onStdoutError);
-      }
+      if (isPipeError(err)) this.stdinBroken = true;
     };
 
     const onStdoutError = (err: NodeJS.ErrnoException) => {
       if (isPipeError(err)) {
-        console.warn("[Pipeline] decoder stdout EPIPE");
-        this.detachPipe(dec, stdout, stdin, onStdinError, onStdoutError);
+        try {
+          stdout.unpipe(stdin);
+        } catch {
+          /* ok */
+        }
       }
     };
 
     stdin.on("error", onStdinError);
     stdout.on("error", onStdoutError);
-
     stdout.pipe(stdin, { end: false });
-    this.pipedStdout = stdout;
 
-    dec.stderr?.on("data", (d: Buffer) => {
+    if (oldStdout) {
+      try {
+        oldStdout.unpipe(stdin);
+      } catch {
+        /* ok */
+      }
+    }
+
+    if (oldDec) {
+      oldDec.removeAllListeners("close");
+      oldDec.kill("SIGKILL");
+    }
+
+    this.decoder = newDec;
+    this.pipedStdout = stdout;
+    this.mode = mode;
+
+    newDec.stderr?.on("data", (d: Buffer) => {
       const msg = d.toString();
       if (msg.includes("Error") && !msg.includes("Estim")) {
         console.error("[Pipeline decoder]", msg.slice(0, 200));
       }
     });
 
-    dec.on("close", (code) => {
-      if (this.decoder !== dec) return;
-      this.detachPipe(dec, stdout, stdin, onStdinError, onStdoutError);
+    newDec.on("close", (code) => {
+      if (this.decoder !== newDec) return;
+      try {
+        stdout.unpipe(stdin);
+      } catch {
+        /* ok */
+      }
+      stdin.removeListener("error", onStdinError);
+      stdout.removeListener("error", onStdoutError);
+      if (this.pipedStdout === stdout) this.pipedStdout = null;
       this.decoder = null;
+
       console.log(`[Pipeline] Decoder fin mode=${mode} code=${code}`);
-      if (mode === "music" && code === 0) {
+      if (mode === "music" && code === 0 && triggerTrackEnd) {
         this.onTrackEnd?.();
       }
     });
   }
 
-  private detachPipe(
-    dec: ChildProcess,
-    stdout: Readable,
-    stdin: Writable,
-    onStdinError: (err: NodeJS.ErrnoException) => void,
-    onStdoutError: (err: NodeJS.ErrnoException) => void,
+  async playSilence() {
+    return this.enqueue(async () => {
+      this.lastMusic = null;
+      this.lastPlayKey = "";
+      await this.ensureEncoder({ title: "LogsFM", description: "Radio en vivo" });
+      if (this.mode !== "silence" || !this.decoder) {
+        await this.attachSilenceDecoder();
+      }
+      console.log("[Pipeline] → silencio continuo");
+    });
+  }
+
+  async playFile(
+    filePath: string,
+    meta: { title: string; artist: string },
+    volume = 0.85,
   ) {
-    try {
-      stdout.unpipe(stdin);
-    } catch {
-      /* ok */
+    const playKey = `${filePath}:${volume}`;
+    if (this.lastPlayKey === playKey && this.encoderAlive() && this.mode === "music") {
+      return;
     }
-    stdin.removeListener("error", onStdinError);
-    stdout.removeListener("error", onStdoutError);
-    if (this.pipedStdout === stdout) this.pipedStdout = null;
-    try {
-      dec.kill("SIGKILL");
-    } catch {
-      /* ok */
-    }
+
+    return this.enqueue(async () => {
+      const description = `${meta.artist} - ${meta.title}`;
+      await this.ensureEncoder({ title: meta.title, description });
+
+      this.lastMusic = { filePath, meta, volume };
+      this.lastPlayKey = playKey;
+
+      const dec = this.spawnMusicDecoder(filePath, volume);
+      await this.swapDecoder(dec, "music", true);
+      console.log(`[Pipeline] → música: ${meta.title}`);
+    });
+  }
+
+  async stopHard() {
+    return this.enqueue(async () => {
+      this.lastMusic = null;
+      this.lastPlayKey = "";
+      if (this.encoderAlive()) {
+        await this.attachSilenceDecoder();
+        console.log("[Pipeline] → silencio (stop)");
+      } else {
+        await this.ensureEncoder({ title: "LogsFM", description: "Radio en vivo" });
+      }
+    });
+  }
+
+  async restartCurrentDecoder(volume: number) {
+    if (!this.lastMusic || this.mode !== "music") return;
+    const { filePath, meta } = this.lastMusic;
+    await this.playFile(filePath, meta, volume);
   }
 
   private async stopDecoderInternal() {
@@ -409,18 +424,15 @@ export class IcecastPipeline {
     }
     if (this.pipedStdout === stdout) this.pipedStdout = null;
 
-    dec.kill("SIGTERM");
-    await sleep(300);
-    try {
-      if (!dec.killed) dec.kill("SIGKILL");
-    } catch {
-      /* ok */
-    }
+    dec.removeAllListeners("close");
+    dec.kill("SIGKILL");
+    await sleep(200);
   }
 
   async shutdown() {
     return this.enqueue(async () => {
       this.lastMusic = null;
+      this.lastPlayKey = "";
       await this.stopDecoderInternal();
       if (this.encoder) {
         try {

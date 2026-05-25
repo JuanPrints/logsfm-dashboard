@@ -14,7 +14,7 @@ async function startRadioEngine() {
   try {
     const engine = getRadioEngine();
     await engine.init();
-    console.log("> Radio engine iniciado (pipeline PCM → Icecast)");
+    console.log("> Radio engine iniciado");
   } catch (err) {
     console.error("[RadioEngine] Error en init, reintento en 15s:", err);
     setTimeout(() => startRadioEngine(), 15_000);

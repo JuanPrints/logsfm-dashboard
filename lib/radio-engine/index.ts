@@ -9,7 +9,7 @@ import { addToHistory } from "@/lib/db/history";
 import { getRadioSettings, updateRadioSettings, updateStreamStats } from "@/lib/db/settings";
 import { getActiveShowNow } from "@/lib/db/shows";
 import { getMatuClient } from "@/lib/db/matu";
-import { IcecastPipeline } from "@/lib/radio-engine/icecast-pipeline";
+import { createStreamOutput, type StreamOutput } from "@/lib/radio-engine/stream-factory";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads", "songs");
 
@@ -19,7 +19,8 @@ function parseRepeatMode(value?: string | null): RepeatMode {
 }
 
 export class RadioEngine extends EventEmitter {
-  private pipeline: IcecastPipeline;
+  private pipeline: StreamOutput;
+  private streamingTrackId: string | null = null;
   private broadcastEnabled = false;
   private playbackState: PlaybackState = "stopped";
   private nowPlaying: NowPlaying | null = null;
@@ -48,7 +49,7 @@ export class RadioEngine extends EventEmitter {
     const mount = process.env.ICECAST_MOUNT ?? "/stream";
     const bitrate = process.env.ICECAST_BITRATE ?? "128";
     const url = `icecast://source:${password}@${host}:${port}${mount}`;
-    this.pipeline = new IcecastPipeline(url, bitrate);
+    this.pipeline = createStreamOutput(url, bitrate);
     this.pipeline.setTrackEndHandler(() => {
       this.onTrackEnded().catch((err) => console.error("[RadioEngine] onTrackEnded:", err));
     });
@@ -240,6 +241,7 @@ export class RadioEngine extends EventEmitter {
     return this.runLocked(async () => {
       this.playbackState = "stopped";
       this.nowPlaying = null;
+      this.streamingTrackId = null;
       this.stopElapsedTimer();
       await updateRadioSettings({ playback_state: "stopped", current_song_id: null });
       await this.pipeline.stopHard();
@@ -338,6 +340,7 @@ export class RadioEngine extends EventEmitter {
       }
 
       await this.loadNextTrack();
+      this.streamingTrackId = null;
       if (this.playbackState === "playing" && this.nowPlaying) {
         this.startedAt = new Date();
         this.nowPlaying.startedAt = this.startedAt.toISOString();
@@ -351,6 +354,7 @@ export class RadioEngine extends EventEmitter {
   async replayCurrent() {
     return this.runLocked(async () => {
       if (!this.nowPlaying) return;
+      this.streamingTrackId = null;
       this.startedAt = new Date();
       this.nowPlaying.startedAt = this.startedAt.toISOString();
       this.nowPlaying.elapsed = 0;

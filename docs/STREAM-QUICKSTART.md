@@ -52,7 +52,7 @@ Referencia de una página. Guía completa: [APP-STREAM.md](./APP-STREAM.md).
 | `[Pipeline] Encoder cerrado code=224` | Icecast cerró la fuente; el watchdog remonta en ~60 s o pulsa **Play** |
 | `logsfm-dashboard` con muchos **↺** | No uses `pm2 restart all`; revisa `pm2 logs` tras deploy |
 
-Logs sanos: una línea `[Pipeline] Conectando encoder` al arrancar, luego `[Pipeline] → música:` al cambiar pista **sin** ráfagas cada segundo.
+Logs sanos (directo): `[DirectStream] → música:` al reproducir, sin ráfagas de `EPIPE` cada segundo. Si ves muchos `[Pipeline] Encoder cerrado code=224`, asegúrate de **no** tener `RADIO_STREAM_MODE=pcm` en `.env` salvo que lo necesites.
 
 ---
 
@@ -91,9 +91,16 @@ setInterval(updateUI, 5000);
 
 ---
 
-## Stream continuo (no se corta entre canciones)
+## Modo de streaming (servidor)
 
-Desde la última versión, **un solo encoder** permanece conectado a Icecast. Al cambiar de canción solo se cambia el decoder interno — los oyentes **no deberían ver el reproductor en 0:00** ni quedarse mudos por reconexión.
+Por defecto el motor usa **modo directo** (`FFmpeg → Icecast`, un proceso por pista/silencio). Es el más estable en producción.
+
+| Variable `.env` | Comportamiento |
+|-----------------|----------------|
+| *(vacío)* o no definida | **Directo** — recomendado |
+| `RADIO_STREAM_MODE=pcm` | Encoder PCM permanente (experimental) |
+
+Logs sanos en modo directo: `[DirectStream] → música:` o `→ silencio continuo`.
 
 Si el stream se cae, el watchdog lo remonta en ~60 s.
 
