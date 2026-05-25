@@ -38,11 +38,23 @@ Referencia de una página. Guía completa: [APP-STREAM.md](./APP-STREAM.md).
 - [ ] `https://stream.logsfm.com/stream` → se oye audio
 - [ ] `curl api.logsfm.com/api/now-playing` → `"playback":"playing"`, `"name":"..."`
 
-### Si no suena
+### Si no suena / Broken pipe (code 224)
 
-1. Admin → **Stop** → esperar 2 s → **Play**
-2. Abrir stream en **pestaña nueva**
-3. `pm2 logs logsfm-dashboard --lines 50` → buscar `[Pipeline] → música:`
+1. **Contraseña Icecast** — en el VPS:
+   ```bash
+   grep source-password /etc/icecast2/icecast.xml
+   ```
+   El valor debe ser **igual** a `ICECAST_PASSWORD` en `.env` (no dejar `hackme` si cambiaste Icecast).
+
+2. **Probar conexión**:
+   ```bash
+   cd ~/apps/logsfm-dashboard
+   bash scripts/verify-icecast.sh
+   ```
+
+3. Admin → **Stop** → esperar 3 s → **Play**
+
+4. `pm2 logs logsfm-dashboard --lines 50` → buscar `[DirectStream] → música:` sin 401/403
 
 ### Errores EPIPE / PM2 reiniciando mucho
 

@@ -23,6 +23,7 @@ import {
 } from "@/lib/db/queue";
 import { clearActivePlaylist, getPlaylist } from "@/lib/db/playlists";
 import { checkFfmpeg } from "@/lib/radio-engine/ffmpeg-check";
+import { logIcecastTarget, isMountFree, icecastSourceGapMs } from "@/lib/radio-engine/icecast-mount";
 import { addToHistory } from "@/lib/db/history";
 import { getRadioSettings, updateRadioSettings, updateStreamStats } from "@/lib/db/settings";
 import { getActiveShowNow } from "@/lib/db/shows";
@@ -75,7 +76,7 @@ export class RadioEngine extends EventEmitter {
     const mount = process.env.ICECAST_MOUNT ?? "/stream";
     const bitrate = process.env.ICECAST_BITRATE ?? "128";
     const url = `icecast://source:${password}@${host}:${port}${mount}`;
-    this.pipeline = createStreamOutput(url, bitrate);
+    this.pipeline = createStreamOutput(url, bitrate, { host, port, mount });
     this.pipeline.setTrackEndHandler(() => {
       this.onTrackEnded().catch((err) => console.error("[RadioEngine] onTrackEnded:", err));
     });
@@ -98,6 +99,22 @@ export class RadioEngine extends EventEmitter {
     } else {
       console.error(`[RadioEngine] FFmpeg NO disponible (${ff.path}): ${ff.error}`);
     }
+
+    const host = process.env.ICECAST_HOST ?? "127.0.0.1";
+    const port = process.env.ICECAST_PORT ?? "8000";
+    const mount = process.env.ICECAST_MOUNT ?? "/stream";
+    logIcecastTarget({ host, port, mount });
+    try {
+      const free = await isMountFree({ host, port, mount });
+      console.log(
+        `[Icecast] Mount ${mount}: ${free ? "libre" : "ocupado (esperará al cambiar pista)"}`,
+      );
+    } catch {
+      console.error(
+        "[Icecast] No se pudo leer status-json — ¿icecast2 activo? systemctl status icecast2",
+      );
+    }
+    console.log(`[Icecast] Pausa entre fuentes: ${icecastSourceGapMs()}ms`);
 
     const settings = await getRadioSettings();
     this.playbackState = settings.playback_state as PlaybackState;
@@ -556,6 +573,7 @@ export class RadioEngine extends EventEmitter {
       await this.loadNextTrack();
       this.streamingTrackId = null;
       if (this.playbackState === "playing" && this.nowPlaying) {
+        await new Promise((r) => setTimeout(r, icecastSourceGapMs()));
         this.startedAt = new Date();
         this.nowPlaying.startedAt = this.startedAt.toISOString();
         this.nowPlaying.elapsed = 0;
