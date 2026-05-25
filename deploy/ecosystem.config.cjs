@@ -9,6 +9,8 @@ module.exports = {
         NODE_ENV: "production",
         PORT: 3020,
         HOST: "0.0.0.0",
+        PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        FFMPEG_PATH: "/usr/bin/ffmpeg",
       },
       instances: 1,
       autorestart: true,

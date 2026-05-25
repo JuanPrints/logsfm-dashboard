@@ -10,7 +10,12 @@ echo "    Directorio: $APP_DIR"
 cd "$APP_DIR"
 
 # Dependencias del sistema
-command -v ffmpeg >/dev/null 2>&1 || { echo "Instala FFmpeg: apt install -y ffmpeg"; exit 1; }
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "Instalando FFmpeg..."
+  apt-get update -qq && apt-get install -y ffmpeg
+fi
+FFMPEG_BIN="$(command -v ffmpeg)"
+echo "    FFmpeg: $FFMPEG_BIN"
 command -v node >/dev/null 2>&1 || { echo "Instala Node.js 20+"; exit 1; }
 
 # .env obligatorio
@@ -20,6 +25,14 @@ if [ ! -f .env ]; then
   echo "  cp .env.example .env && nano .env"
   exit 1
 fi
+
+# PM2 no hereda PATH completo — fijar FFmpeg en .env
+if grep -q '^FFMPEG_PATH=' .env; then
+  sed -i "s|^FFMPEG_PATH=.*|FFMPEG_PATH=$FFMPEG_BIN|" .env
+else
+  echo "FFMPEG_PATH=$FFMPEG_BIN" >> .env
+fi
+echo "    .env FFMPEG_PATH=$FFMPEG_BIN"
 
 mkdir -p logs
 

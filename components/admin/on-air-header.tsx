@@ -171,9 +171,10 @@ export function OnAirHeader() {
       {ffmpegOk === false && (
         <div className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-4 py-2 text-[11px] text-danger">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          FFmpeg no está en el PATH del servidor. Instala con{" "}
-          <code className="rounded bg-background px-1">apt install ffmpeg</code> o define{" "}
-          <code className="rounded bg-background px-1">FFMPEG_PATH</code> en .env y reinicia PM2.
+          FFmpeg no está disponible para el motor de radio. En el servidor ejecuta:{" "}
+          <code className="rounded bg-background px-1">apt install -y ffmpeg</code>, añade{" "}
+          <code className="rounded bg-background px-1">FFMPEG_PATH=/usr/bin/ffmpeg</code> al .env y{" "}
+          <code className="rounded bg-background px-1">pm2 restart logsfm-dashboard --update-env</code>
         </div>
       )}
 
