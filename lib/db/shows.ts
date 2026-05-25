@@ -1,4 +1,5 @@
 import { getMatuClient } from "./matu";
+import { firstRow } from "./helpers";
 import type { ScheduledShowRow } from "./types";
 
 export async function listScheduledShows() {
@@ -16,13 +17,9 @@ export async function createScheduledShow(
   payload: Omit<ScheduledShowRow, "id" | "created_at">,
 ) {
   const db = getMatuClient();
-  const { data, error } = await db
-    .from("scheduled_shows")
-    .insert(payload)
-    .select("*")
-    .single();
+  const { data, error } = await db.from("scheduled_shows").insert(payload);
   if (error) throw new Error(error.message);
-  return data as ScheduledShowRow;
+  return firstRow(data) as ScheduledShowRow;
 }
 
 export async function updateScheduledShow(
@@ -30,19 +27,18 @@ export async function updateScheduledShow(
   payload: Partial<ScheduledShowRow>,
 ) {
   const db = getMatuClient();
+  const { id: _id, created_at: _ca, ...updateData } = payload as Record<string, unknown>;
   const { data, error } = await db
     .from("scheduled_shows")
-    .update(payload)
     .eq("id", id)
-    .select("*")
-    .single();
+    .update(updateData);
   if (error) throw new Error(error.message);
-  return data as ScheduledShowRow;
+  return firstRow(data) as ScheduledShowRow;
 }
 
 export async function deleteScheduledShow(id: string) {
   const db = getMatuClient();
-  const { error } = await db.from("scheduled_shows").delete().eq("id", id);
+  const { error } = await db.from("scheduled_shows").eq("id", id).delete();
   if (error) throw new Error(error.message);
 }
 

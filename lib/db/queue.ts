@@ -1,4 +1,5 @@
 import { getMatuClient } from "./matu";
+import { firstRow } from "./helpers";
 import type { QueueItemRow, QueueItemWithSong } from "./types";
 
 export async function getQueue() {
@@ -20,16 +21,14 @@ export async function addToQueue(songId: string, source = "manual") {
 
   const { data, error } = await db
     .from("queue_items")
-    .insert({ song_id: songId, position, source })
-    .select("*")
-    .single();
+    .insert({ song_id: songId, position, source });
   if (error) throw new Error(error.message);
-  return data as QueueItemRow;
+  return firstRow(data) as QueueItemRow;
 }
 
 export async function removeFromQueue(queueItemId: string) {
   const db = getMatuClient();
-  const { error } = await db.from("queue_items").delete().eq("id", queueItemId);
+  const { error } = await db.from("queue_items").eq("id", queueItemId).delete();
   if (error) throw new Error(error.message);
   await normalizeQueuePositions();
 }
@@ -45,8 +44,8 @@ export async function reorderQueue(items: { id: string; position: number }[]) {
   for (const item of items) {
     const { error } = await db
       .from("queue_items")
-      .update({ position: item.position })
-      .eq("id", item.id);
+      .eq("id", item.id)
+      .update({ position: item.position });
     if (error) throw new Error(error.message);
   }
 }
@@ -64,7 +63,7 @@ async function normalizeQueuePositions() {
   const queue = await getQueue();
   const db = getMatuClient();
   for (let i = 0; i < queue.length; i++) {
-    await db.from("queue_items").update({ position: i }).eq("id", queue[i].id);
+    await db.from("queue_items").eq("id", queue[i].id).update({ position: i });
   }
 }
 

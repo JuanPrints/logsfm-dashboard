@@ -1,4 +1,5 @@
 import { getMatuClient } from "./matu";
+import { firstRow } from "./helpers";
 import type { CategoryRow, RadioSettingsRow, StreamStatsRow } from "./types";
 
 export async function getStreamStats() {
@@ -19,16 +20,14 @@ export async function updateStreamStats(payload: Partial<StreamStatsRow>) {
 
   const { data, error } = await db
     .from("stream_stats")
+    .eq("id", "default")
     .update({
       ...payload,
       peak_listeners: payload.listeners != null ? peak : current?.peak_listeners,
       updated_at: new Date().toISOString(),
-    })
-    .eq("id", "default")
-    .select("*")
-    .single();
+    });
   if (error) throw new Error(error.message);
-  return data as StreamStatsRow;
+  return firstRow(data) as StreamStatsRow;
 }
 
 export async function getRadioSettings() {
@@ -46,12 +45,10 @@ export async function updateRadioSettings(payload: Partial<RadioSettingsRow>) {
   const db = getMatuClient();
   const { data, error } = await db
     .from("radio_settings")
-    .update({ ...payload, updated_at: new Date().toISOString() })
     .eq("id", "default")
-    .select("*")
-    .single();
+    .update({ ...payload, updated_at: new Date().toISOString() });
   if (error) throw new Error(error.message);
-  return data as RadioSettingsRow;
+  return firstRow(data) as RadioSettingsRow;
 }
 
 export async function listCategories() {
@@ -66,9 +63,9 @@ export async function listCategories() {
 
 export async function createCategory(payload: Pick<CategoryRow, "name" | "slug" | "color">) {
   const db = getMatuClient();
-  const { data, error } = await db.from("categories").insert(payload).select("*").single();
+  const { data, error } = await db.from("categories").insert(payload);
   if (error) throw new Error(error.message);
-  return data as CategoryRow;
+  return firstRow(data) as CategoryRow;
 }
 
 export async function uploadSongFile(filename: string, file: File | Blob | Buffer) {

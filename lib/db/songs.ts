@@ -1,4 +1,5 @@
 import { getMatuClient } from "./matu";
+import { firstRow } from "./helpers";
 import type { SongRow } from "./types";
 
 export async function listSongs(categoryId?: string) {
@@ -23,25 +24,20 @@ export async function getSong(id: string) {
 
 export async function createSong(payload: Omit<SongRow, "id" | "created_at">) {
   const db = getMatuClient();
-  const { data, error } = await db.from("songs").insert(payload).select("*").single();
+  const { data, error } = await db.from("songs").insert(payload);
   if (error) throw new Error(error.message);
-  return data as SongRow;
+  return firstRow(data) as SongRow;
 }
 
 export async function updateSong(id: string, payload: Partial<SongRow>) {
   const db = getMatuClient();
-  const { data, error } = await db
-    .from("songs")
-    .update(payload)
-    .eq("id", id)
-    .select("*")
-    .single();
+  const { data, error } = await db.from("songs").eq("id", id).update(payload);
   if (error) throw new Error(error.message);
-  return data as SongRow;
+  return firstRow(data) as SongRow;
 }
 
 export async function deleteSong(id: string) {
   const db = getMatuClient();
-  const { error } = await db.from("songs").delete().eq("id", id);
+  const { error } = await db.from("songs").eq("id", id).delete();
   if (error) throw new Error(error.message);
 }

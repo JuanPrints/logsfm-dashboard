@@ -1,4 +1,5 @@
 import { getMatuClient } from "./matu";
+import { firstRow } from "./helpers";
 import type { HistoryRow } from "./types";
 
 export async function getHistory(limit = 50) {
@@ -20,11 +21,7 @@ export async function addToHistory(payload: {
   duration: number;
 }) {
   const db = getMatuClient();
-  const { data, error } = await db
-    .from("playback_history")
-    .insert(payload)
-    .select("*")
-    .single();
+  const { data, error } = await db.from("playback_history").insert(payload);
   if (error) throw new Error(error.message);
-  return data as HistoryRow;
+  return firstRow(data) as HistoryRow;
 }
