@@ -4,6 +4,8 @@ export type PlaybackState = "playing" | "paused" | "stopped";
 
 export type RepeatMode = "off" | "one" | "all";
 
+export type PlaybackMode = "playlist" | "manual" | "single";
+
 export interface NowPlaying {
   id: string;
   title: string;
@@ -57,6 +59,9 @@ export interface StreamInfo {
 
 export interface RadioState {
   playback: PlaybackState;
+  playbackMode: PlaybackMode;
+  activePlaylistId: string | null;
+  activePlaylistName: string | null;
   nowPlaying: NowPlaying | null;
   queue: QueueItem[];
   history: HistoryItem[];
@@ -67,6 +72,7 @@ export interface RadioState {
   autoDj: boolean;
   shuffle: boolean;
   repeatMode: RepeatMode;
+  ffmpegOk?: boolean;
 }
 
 export interface SocketEvents {

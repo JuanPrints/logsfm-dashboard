@@ -59,6 +59,15 @@ export async function popNextFromQueue() {
   return next;
 }
 
+/** Quita de la cola la canción que ya está sonando (evita repetir al hacer Next). */
+export async function advanceQueuePastSong(songId: string) {
+  let queue = await getQueue();
+  while (queue.length > 0 && queue[0].song_id === songId) {
+    await removeFromQueue(queue[0].id);
+    queue = await getQueue();
+  }
+}
+
 async function normalizeQueuePositions() {
   const queue = await getQueue();
   const db = getMatuClient();

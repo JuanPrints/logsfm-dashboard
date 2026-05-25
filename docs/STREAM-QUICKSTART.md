@@ -146,9 +146,29 @@ pm2 logs logsfm-dashboard --lines 80
 - [ ] Next → cambia canción en admin e Icecast `server_name`
 - [ ] Fin de canción → siguiente o silencio, sin bucle de errores en logs
 
-### SQL opcional (volumen persistido)
+### SQL en MatuDB (ejecutar una vez en producción)
 
 ```sql
--- scripts/add-music-volume.sql
+-- scripts/add-playback-mode.sql
+ALTER TABLE radio_settings ADD COLUMN IF NOT EXISTS playback_mode TEXT DEFAULT 'manual';
+ALTER TABLE radio_settings ADD COLUMN IF NOT EXISTS active_playlist_id UUID REFERENCES playlists(id) ON DELETE SET NULL;
 ALTER TABLE radio_settings ADD COLUMN IF NOT EXISTS music_volume INTEGER DEFAULT 85;
+ALTER TABLE radio_settings ADD COLUMN IF NOT EXISTS repeat_mode TEXT DEFAULT 'off';
 ```
+
+### Modos de la consola DJ
+
+| Modo | Cómo se activa | Comportamiento |
+|------|----------------|----------------|
+| **Playlist** | Cargar cola / Cargar y Play | Cola = playlist; al recargar página se mantiene en API |
+| **Cola manual** | Agregar canciones desde biblioteca | No recarga playlist sola; botón "Cola manual" sale del modo playlist |
+| **Canción suelta** | Play en biblioteca/cola | Una sola pista, sin playlist activa |
+
+### Dependencias en el servidor (no npm)
+
+```bash
+apt install -y ffmpeg icecast2
+ffmpeg -version   # debe responder
+```
+
+Copia `.env.example` → `.env` con `ICECAST_PASSWORD` correcto. Opcional: `FFMPEG_PATH=/usr/bin/ffmpeg` si PM2 no ve ffmpeg.

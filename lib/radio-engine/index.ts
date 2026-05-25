@@ -1,10 +1,28 @@
 import { EventEmitter } from "events";
 import path from "path";
 import fs from "fs";
-import type { NowPlaying, PlaybackState, RepeatMode, StreamInfo, StreamStatus } from "@/lib/types";
+import type {
+  NowPlaying,
+  PlaybackMode,
+  PlaybackState,
+  RepeatMode,
+  StreamInfo,
+  StreamStatus,
+} from "@/lib/types";
 import { getSong } from "@/lib/db/songs";
 import { resolveSongFilePath, songFileExists } from "@/lib/upload/resolve-song-path";
-import { popNextFromQueue, getQueue, fillQueueFromPlaylist } from "@/lib/db/queue";
+import {
+  popNextFromQueue,
+  getQueue,
+  fillQueueFromPlaylist,
+  advanceQueuePastSong,
+  addToQueue,
+  removeFromQueue,
+  reorderQueue,
+  clearQueue,
+} from "@/lib/db/queue";
+import { clearActivePlaylist, getPlaylist } from "@/lib/db/playlists";
+import { checkFfmpeg } from "@/lib/radio-engine/ffmpeg-check";
 import { addToHistory } from "@/lib/db/history";
 import { getRadioSettings, updateRadioSettings, updateStreamStats } from "@/lib/db/settings";
 import { getActiveShowNow } from "@/lib/db/shows";
@@ -16,6 +34,11 @@ const UPLOADS_DIR = path.join(process.cwd(), "uploads", "songs");
 function parseRepeatMode(value?: string | null): RepeatMode {
   if (value === "one" || value === "all") return value;
   return "off";
+}
+
+function parsePlaybackMode(value?: string | null): PlaybackMode {
+  if (value === "playlist" || value === "single") return value;
+  return "manual";
 }
 
 export class RadioEngine extends EventEmitter {
@@ -35,6 +58,9 @@ export class RadioEngine extends EventEmitter {
   private micVolume = 100;
   private ducking = true;
   private repeatMode: RepeatMode = "off";
+  private playbackMode: PlaybackMode = "manual";
+  private activePlaylistId: string | null = null;
+  private ffmpegOk = false;
   private handlingTrackEnd = false;
   private engineLock: Promise<void> = Promise.resolve();
 
@@ -65,8 +91,18 @@ export class RadioEngine extends EventEmitter {
   }
 
   async init() {
+    const ff = checkFfmpeg();
+    this.ffmpegOk = ff.ok;
+    if (ff.ok) {
+      console.log(`[RadioEngine] FFmpeg OK: ${ff.version ?? ff.path}`);
+    } else {
+      console.error(`[RadioEngine] FFmpeg NO disponible (${ff.path}): ${ff.error}`);
+    }
+
     const settings = await getRadioSettings();
     this.playbackState = settings.playback_state as PlaybackState;
+    this.playbackMode = parsePlaybackMode(settings.playback_mode);
+    this.activePlaylistId = settings.active_playlist_id ?? null;
     this.micEnabled = settings.mic_enabled;
     this.isLiveDj = settings.is_live_dj;
     this.repeatMode = parseRepeatMode(settings.repeat_mode);
@@ -104,6 +140,7 @@ export class RadioEngine extends EventEmitter {
     await this.runLocked(async () => {
       if (this.playbackState === "playing" && this.nowPlaying) {
         try {
+          await advanceQueuePastSong(this.nowPlaying.id);
           await this.startMusicStream();
           this.startedAt = new Date(this.nowPlaying!.startedAt);
           this.startElapsedTimer();
@@ -170,6 +207,7 @@ export class RadioEngine extends EventEmitter {
       { title: song.title, artist },
       this.musicVolume / 100,
     );
+    this.streamingTrackId = this.nowPlaying.id;
     this.setStreamStatus("online");
   }
 
@@ -207,7 +245,9 @@ export class RadioEngine extends EventEmitter {
     this.broadcastEnabled = true;
 
     const queue = await getQueue();
-    if (queue.length === 0) await this.ensureQueueFromActivePlaylist();
+    if (queue.length === 0 && this.playbackMode === "playlist") {
+      await this.ensureQueueFromActivePlaylist();
+    }
     if (!this.nowPlaying) await this.loadNextTrack();
 
     if (!this.nowPlaying) {
@@ -223,8 +263,17 @@ export class RadioEngine extends EventEmitter {
     await updateRadioSettings({
       playback_state: "playing",
       current_song_id: this.nowPlaying.id,
+      playback_mode: this.playbackMode,
+      active_playlist_id: this.activePlaylistId,
     });
     this.emitState();
+  }
+
+  private async persistMode() {
+    await updateRadioSettings({
+      playback_mode: this.playbackMode,
+      active_playlist_id: this.activePlaylistId,
+    }).catch(() => {});
   }
 
   async pause() {
@@ -255,28 +304,57 @@ export class RadioEngine extends EventEmitter {
       const { setActivePlaylist } = await import("@/lib/db/playlists");
       const pl = await setActivePlaylist(playlistId);
       await fillQueueFromPlaylist(playlistId, pl.shuffle);
-      this.nowPlaying = null;
+
+      this.playbackMode = "playlist";
+      this.activePlaylistId = playlistId;
+      this.streamingTrackId = null;
 
       const queue = await getQueue();
+      if (queue.length === 0) {
+        throw new Error("La playlist no tiene canciones.");
+      }
+
       if (autoPlay) {
-        if (queue.length === 0) {
-          throw new Error("La playlist no tiene canciones.");
-        }
+        this.nowPlaying = null;
         await this.playInternal();
       } else {
+        this.playbackState = "stopped";
+        this.nowPlaying = null;
+        this.stopElapsedTimer();
+        await updateRadioSettings({
+          playback_state: "stopped",
+          current_song_id: null,
+          playback_mode: "playlist",
+          active_playlist_id: playlistId,
+        });
+        await this.pipeline.stopHard();
+        this.setStreamStatus("online");
         this.emitState();
       }
+    });
+  }
+
+  /** Cola manual: quitar modo playlist sin borrar canciones en cola. */
+  async useManualMode() {
+    return this.runLocked(async () => {
+      await clearActivePlaylist();
+      this.playbackMode = "manual";
+      this.activePlaylistId = null;
+      await this.persistMode();
+      this.emitState();
     });
   }
 
   async playNow(songId: string) {
     return this.runLocked(async () => {
       const song = await getSong(songId);
-      const { clearQueue, addToQueue } = await import("@/lib/db/queue");
+      await clearActivePlaylist();
       await clearQueue();
-      await addToQueue(songId);
 
+      this.playbackMode = "single";
+      this.activePlaylistId = null;
       this.broadcastEnabled = true;
+      this.streamingTrackId = null;
       this.nowPlaying = {
         id: song.id,
         title: song.title,
@@ -287,11 +365,70 @@ export class RadioEngine extends EventEmitter {
         startedAt: new Date().toISOString(),
       };
 
-      await updateRadioSettings({ current_song_id: song.id, playback_state: "playing" });
+      await updateRadioSettings({
+        current_song_id: song.id,
+        playback_state: "playing",
+        playback_mode: "single",
+        active_playlist_id: null,
+      });
       await this.startMusicStream();
       this.playbackState = "playing";
       this.startedAt = new Date();
       this.startElapsedTimer();
+      this.emitState();
+    });
+  }
+
+  async addToQueueItem(songId: string) {
+    return this.runLocked(async () => {
+      if (this.playbackMode === "playlist") {
+        await clearActivePlaylist();
+        this.activePlaylistId = null;
+      }
+      this.playbackMode = "manual";
+      await addToQueue(songId, "manual");
+      await this.persistMode();
+      this.emitState();
+    });
+  }
+
+  async removeQueueItem(queueItemId: string) {
+    return this.runLocked(async () => {
+      await removeFromQueue(queueItemId);
+      this.playbackMode = "manual";
+      this.activePlaylistId = null;
+      await clearActivePlaylist();
+      await this.persistMode();
+      this.emitState();
+    });
+  }
+
+  async reorderQueueItems(items: { id: string; position: number }[]) {
+    return this.runLocked(async () => {
+      await reorderQueue(items);
+      this.emitState();
+    });
+  }
+
+  async clearQueueAll() {
+    return this.runLocked(async () => {
+      await clearQueue();
+      this.playbackMode = "manual";
+      this.activePlaylistId = null;
+      await clearActivePlaylist();
+      this.streamingTrackId = null;
+      this.playbackState = "stopped";
+      this.nowPlaying = null;
+      this.stopElapsedTimer();
+      await updateRadioSettings({
+        playback_state: "stopped",
+        current_song_id: null,
+        playback_mode: "manual",
+        active_playlist_id: null,
+      });
+      await this.pipeline.stopHard();
+      this.setStreamStatus("online");
+      await this.persistMode();
       this.emitState();
     });
   }
@@ -311,19 +448,34 @@ export class RadioEngine extends EventEmitter {
   }
 
   private async ensureQueueFromActivePlaylist() {
-    try {
-      const db = getMatuClient();
-      const { data } = await db
-        .from("playlists")
-        .select("id, shuffle")
-        .eq("is_active", true)
-        .limit(1)
-        .single();
-      if (data?.id) {
-        await fillQueueFromPlaylist(data.id as string, Boolean(data.shuffle));
+    if (this.playbackMode !== "playlist") return;
+
+    const playlistId = this.activePlaylistId;
+    if (!playlistId) {
+      try {
+        const db = getMatuClient();
+        const { data } = await db
+          .from("playlists")
+          .select("id, shuffle")
+          .eq("is_active", true)
+          .limit(1)
+          .single();
+        if (data?.id) {
+          this.activePlaylistId = data.id as string;
+          await fillQueueFromPlaylist(data.id as string, Boolean(data.shuffle));
+          await this.persistMode();
+        }
+      } catch {
+        /* no active playlist */
       }
+      return;
+    }
+
+    try {
+      const pl = await getPlaylist(playlistId);
+      await fillQueueFromPlaylist(playlistId, pl.shuffle);
     } catch {
-      /* no active playlist */
+      /* playlist missing */
     }
   }
 
@@ -402,6 +554,7 @@ export class RadioEngine extends EventEmitter {
       }
 
       await this.loadNextTrack();
+      this.streamingTrackId = null;
       if (this.playbackState === "playing" && this.nowPlaying) {
         this.startedAt = new Date();
         this.nowPlaying.startedAt = this.startedAt.toISOString();
@@ -449,19 +602,29 @@ export class RadioEngine extends EventEmitter {
     if (autoDj) {
       const activeShow = await getActiveShowNow();
       if (activeShow?.playlist_id) {
-        await fillQueueFromPlaylist(activeShow.playlist_id);
+        const { setActivePlaylist } = await import("@/lib/db/playlists");
+        await setActivePlaylist(activeShow.playlist_id);
+        await fillQueueFromPlaylist(activeShow.playlist_id, settings.shuffle);
+        this.playbackMode = "playlist";
+        this.activePlaylistId = activeShow.playlist_id;
+      } else if (this.activePlaylistId) {
+        const pl = await getPlaylist(this.activePlaylistId);
+        await fillQueueFromPlaylist(this.activePlaylistId, pl.shuffle);
       } else {
         const db = getMatuClient();
         const { data } = await db
           .from("playlists")
-          .select("id")
+          .select("id, shuffle")
           .eq("is_active", true)
           .limit(1)
           .single();
         if (data?.id) {
-          await fillQueueFromPlaylist(data.id as string, settings.shuffle);
+          this.playbackMode = "playlist";
+          this.activePlaylistId = data.id as string;
+          await fillQueueFromPlaylist(data.id as string, Boolean(data.shuffle));
         }
       }
+      await this.persistMode();
     }
 
     return autoDj;
@@ -534,7 +697,7 @@ export class RadioEngine extends EventEmitter {
   private async loadNextTrack() {
     let next = await popNextFromQueue();
 
-    if (!next && this.repeatMode === "all") {
+    if (!next && this.repeatMode === "all" && this.playbackMode === "playlist") {
       await this.ensureQueueFromActivePlaylist();
       next = await popNextFromQueue();
     }
@@ -623,6 +786,14 @@ export class RadioEngine extends EventEmitter {
       autoDj: settings.auto_dj,
       shuffle: settings.shuffle,
       repeatMode: this.repeatMode,
+      playbackMode: this.playbackMode,
+      activePlaylistId: this.activePlaylistId,
+      activePlaylistName: this.activePlaylistId
+        ? await getPlaylist(this.activePlaylistId)
+            .then((p) => p.name)
+            .catch(() => null)
+        : null,
+      ffmpegOk: this.ffmpegOk,
       queue: queue.map((q, i) => ({
         id: q.id,
         songId: q.song_id,

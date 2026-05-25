@@ -65,10 +65,14 @@ export interface ScheduledShowRow {
   created_at: string;
 }
 
+export type PlaybackMode = "playlist" | "manual" | "single";
+
 export interface RadioSettingsRow {
   id: string;
   playback_state: string;
   current_song_id: string | null;
+  playback_mode?: PlaybackMode | string;
+  active_playlist_id?: string | null;
   auto_dj: boolean;
   shuffle: boolean;
   repeat_mode?: string;

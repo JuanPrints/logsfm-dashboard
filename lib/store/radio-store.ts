@@ -71,6 +71,10 @@ export const useRadioStore = create<RadioStore>((set, get) => ({
   autoDj: true,
   shuffle: false,
   repeatMode: "off" as const,
+  playbackMode: "manual" as const,
+  activePlaylistId: null,
+  activePlaylistName: null,
+  ffmpegOk: true,
 
   refresh: async () => {
     try {

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "child_process";
+import { getFfmpegPath } from "@/lib/radio-engine/ffmpeg-check";
 
 export type PipelineMode = "silence" | "music" | "offline";
 
@@ -120,7 +121,7 @@ export class DirectIcecastStream {
       this.icecastUrl,
     ];
 
-    const proc = spawn("ffmpeg", args, {
+    const proc = spawn(getFfmpegPath(), args, {
       stdio: ["ignore", "ignore", "pipe"],
     });
     this.attachProcess(proc, mode);

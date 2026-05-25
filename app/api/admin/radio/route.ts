@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getRadioEngine } from "@/lib/radio-engine";
-import { addToQueue, removeFromQueue, reorderQueue, clearQueue } from "@/lib/db/queue";
 
 export async function GET() {
   try {
@@ -71,16 +70,16 @@ export async function POST(request: Request) {
         );
         break;
       case "add-to-queue":
-        await addToQueue(body.songId);
+        await engine.addToQueueItem(body.songId);
         break;
       case "remove-from-queue":
-        await removeFromQueue(body.queueItemId);
+        await engine.removeQueueItem(body.queueItemId);
         break;
       case "reorder-queue":
-        await reorderQueue(body.items);
+        await engine.reorderQueueItems(body.items);
         break;
       case "clear-queue":
-        await clearQueue();
+        await engine.clearQueueAll();
         break;
       default:
         return NextResponse.json(

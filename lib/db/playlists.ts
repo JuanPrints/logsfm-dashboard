@@ -93,3 +93,8 @@ export async function setActivePlaylist(playlistId: string) {
   if (error) throw new Error(error.message);
   return firstRow(data) as PlaylistRow;
 }
+
+export async function clearActivePlaylist() {
+  const db = getMatuClient();
+  await db.rpc("UPDATE playlists SET is_active = false");
+}

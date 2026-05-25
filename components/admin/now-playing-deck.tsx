@@ -66,7 +66,9 @@ export function NowPlayingDeck() {
             ? "● EN AIRE — emitiendo a oyentes"
             : playback === "paused"
               ? "Pausado — stream activo (silencio)"
-              : "Listo — el stream permanece conectado"}
+              : playback === "stopped"
+                ? "Detenido — stream en silencio (listo para Play)"
+                : "Listo — el stream permanece conectado"}
         </p>
       </div>
     </div>

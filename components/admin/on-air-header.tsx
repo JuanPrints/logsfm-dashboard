@@ -14,6 +14,7 @@ import {
   ListMusic,
   Radio,
   Info,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRadioStore } from "@/lib/store/radio-store";
@@ -25,17 +26,28 @@ interface Playlist {
   is_active: boolean;
 }
 
+const MODE_LABELS = {
+  playlist: "Modo playlist",
+  manual: "Cola manual",
+  single: "Canción suelta",
+} as const;
+
 export function OnAirHeader() {
   const {
     playback,
+    playbackMode,
+    activePlaylistId,
+    activePlaylistName,
     stream,
     autoDj,
     shuffle,
     repeatMode,
     queue,
+    ffmpegOk,
     pending,
     sendCommand,
     radioAction,
+    refresh,
   } = useRadioStore();
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [selectedPl, setSelectedPl] = useState("");
@@ -45,13 +57,13 @@ export function OnAirHeader() {
     fetch("/api/admin/playlists")
       .then((r) => r.json())
       .then((j) => {
-        if (j.success) {
-          setPlaylists(j.data);
-          const active = j.data.find((p: Playlist) => p.is_active);
-          if (active) setSelectedPl(active.id);
-        }
+        if (j.success) setPlaylists(j.data);
       });
   }, []);
+
+  useEffect(() => {
+    if (activePlaylistId) setSelectedPl(activePlaylistId);
+  }, [activePlaylistId]);
 
   const loadPlaylist = async (play = false) => {
     if (!selectedPl) return alert("Selecciona una playlist");
@@ -59,7 +71,7 @@ export function OnAirHeader() {
       ? {
           id: "loading",
           title: "Cargando playlist…",
-          artist: "",
+          artist: activePlaylistName ?? "",
           duration: 0,
           elapsed: 0,
           startedAt: new Date().toISOString(),
@@ -72,10 +84,17 @@ export function OnAirHeader() {
         play
           ? {
               playback: "playing",
+              playbackMode: "playlist",
+              activePlaylistId: selectedPl,
               nowPlaying: optimisticNowPlaying,
               stream: { ...stream, status: "connecting" },
             }
-          : undefined,
+          : {
+              playback: "stopped",
+              playbackMode: "playlist",
+              activePlaylistId: selectedPl,
+              nowPlaying: null,
+            },
       );
     } catch (e) {
       alert(e instanceof Error ? e.message : "Error al cargar playlist");
@@ -86,12 +105,26 @@ export function OnAirHeader() {
     try {
       if (isPlaying) {
         await sendCommand({ action: "pause" });
-      } else {
-        if (queue.length === 0 && selectedPl) {
-          await loadPlaylist(false);
-        }
-        await sendCommand({ action: "play" });
+        return;
       }
+
+      if (queue.length === 0) {
+        if (playbackMode === "playlist" && (activePlaylistId || selectedPl)) {
+          const id = activePlaylistId || selectedPl;
+          await radioAction({
+            action: "load-playlist",
+            playlistId: id,
+            play: true,
+          });
+          return;
+        }
+        alert(
+          "No hay canciones en cola. Carga una playlist (Cargar y Play) o agrega canciones desde la biblioteca.",
+        );
+        return;
+      }
+
+      await sendCommand({ action: "play" });
     } catch (e) {
       alert(e instanceof Error ? e.message : "Error al reproducir");
     }
@@ -102,6 +135,15 @@ export function OnAirHeader() {
       await sendCommand({ action: "stop" });
     } catch (e) {
       alert(e instanceof Error ? e.message : "Error al detener");
+    }
+  };
+
+  const switchToManual = async () => {
+    try {
+      await radioAction({ action: "use-manual-mode" });
+      await refresh();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Error");
     }
   };
 
@@ -126,9 +168,25 @@ export function OnAirHeader() {
         </span>
       </div>
 
-      <div className="flex items-center gap-2 border-b border-border/50 bg-accent/5 px-4 py-2 text-[11px] text-muted">
+      {ffmpegOk === false && (
+        <div className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-4 py-2 text-[11px] text-danger">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          FFmpeg no está en el PATH del servidor. Instala con{" "}
+          <code className="rounded bg-background px-1">apt install ffmpeg</code> o define{" "}
+          <code className="rounded bg-background px-1">FFMPEG_PATH</code> en .env y reinicia PM2.
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-border/50 bg-accent/5 px-4 py-2 text-[11px] text-muted">
         <Info className="h-3.5 w-3.5 shrink-0 text-accent" />
-        Recargar esta página no detiene la emisión — el motor corre en el servidor.
+        <span>
+          <strong className="text-foreground">{MODE_LABELS[playbackMode]}</strong>
+          {playbackMode === "playlist" && activePlaylistName
+            ? ` · ${activePlaylistName}`
+            : null}
+          {" — "}
+          Recargar la página no detiene la emisión (motor en servidor).
+        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-4 p-4">
@@ -164,7 +222,7 @@ export function OnAirHeader() {
             disabled={pending}
             onClick={handleStop}
             className="dj-btn dj-btn-stop p-2 disabled:opacity-50"
-            title="Detener música — el stream sigue en silencio para oyentes"
+            title="Detener música — el stream sigue en silencio"
           >
             <Square className="h-4 w-4" />
           </button>
@@ -184,7 +242,7 @@ export function OnAirHeader() {
             disabled={pending}
             onClick={() => sendCommand({ action: "toggle-shuffle" })}
             className={cn("dj-btn text-xs disabled:opacity-50", shuffle ? "bg-accent/20 text-accent" : "dj-btn-action")}
-            title="Aleatorio"
+            title="Aleatorio global (settings)"
           >
             <Shuffle className="h-3 w-3" />
           </button>
@@ -200,7 +258,7 @@ export function OnAirHeader() {
               repeatMode === "one"
                 ? "Repetir canción"
                 : repeatMode === "all"
-                  ? "Repetir playlist"
+                  ? "Repetir playlist (solo en modo playlist)"
                   : "Repetir: apagado"
             }
           >
@@ -212,13 +270,13 @@ export function OnAirHeader() {
             disabled={pending}
             onClick={() => sendCommand({ action: "replay-current" })}
             className="dj-btn dj-btn-action p-2 disabled:opacity-50"
-            title="Repetir canción actual ahora"
+            title="Repetir canción actual"
           >
             <RotateCcw className="h-3 w-3" />
           </button>
         </div>
 
-        <div className="flex items-center gap-2 border-l border-border pl-4">
+        <div className="flex flex-wrap items-center gap-2 border-l border-border pl-4">
           <ListMusic className="h-4 w-4 text-muted" />
           <select
             value={selectedPl}
@@ -228,7 +286,7 @@ export function OnAirHeader() {
             <option value="">Playlist...</option>
             {playlists.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} {p.is_active ? "★" : ""}
+                {p.name} {p.id === activePlaylistId ? "★" : ""}
               </option>
             ))}
           </select>
@@ -238,6 +296,11 @@ export function OnAirHeader() {
           <button type="button" onClick={() => loadPlaylist(true)} className="dj-btn dj-btn-play text-xs">
             Cargar y Play
           </button>
+          {playbackMode === "playlist" && (
+            <button type="button" onClick={switchToManual} className="dj-btn dj-btn-action text-xs">
+              Cola manual
+            </button>
+          )}
         </div>
       </div>
     </div>
