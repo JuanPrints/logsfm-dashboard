@@ -9,6 +9,8 @@ import {
   Square,
   Zap,
   Shuffle,
+  Repeat,
+  RotateCcw,
   ListMusic,
   Radio,
   Info,
@@ -29,6 +31,7 @@ export function OnAirHeader() {
     stream,
     autoDj,
     shuffle,
+    repeatMode,
     queue,
     pending,
     sendCommand,
@@ -164,8 +167,37 @@ export function OnAirHeader() {
             disabled={pending}
             onClick={() => sendCommand({ action: "toggle-shuffle" })}
             className={cn("dj-btn text-xs disabled:opacity-50", shuffle ? "bg-accent/20 text-accent" : "dj-btn-action")}
+            title="Aleatorio"
           >
             <Shuffle className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => sendCommand({ action: "toggle-repeat" })}
+            className={cn(
+              "dj-btn text-xs disabled:opacity-50",
+              repeatMode !== "off" ? "bg-accent/20 text-accent" : "dj-btn-action",
+            )}
+            title={
+              repeatMode === "one"
+                ? "Repetir canción"
+                : repeatMode === "all"
+                  ? "Repetir playlist"
+                  : "Repetir: apagado"
+            }
+          >
+            <Repeat className="h-3 w-3" />
+            {repeatMode === "one" ? "1" : repeatMode === "all" ? "∞" : ""}
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => sendCommand({ action: "replay-current" })}
+            className="dj-btn dj-btn-action p-2 disabled:opacity-50"
+            title="Repetir canción actual ahora"
+          >
+            <RotateCcw className="h-3 w-3" />
           </button>
         </div>
 

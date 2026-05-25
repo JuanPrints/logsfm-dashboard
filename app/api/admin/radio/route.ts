@@ -42,6 +42,12 @@ export async function POST(request: Request) {
       case "toggle-shuffle":
         await engine.toggleShuffle();
         break;
+      case "toggle-repeat":
+        await engine.toggleRepeat();
+        break;
+      case "replay-current":
+        await engine.replayCurrent();
+        break;
       case "go-live":
         await engine.goLive(body.djName);
         break;

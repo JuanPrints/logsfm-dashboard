@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS radio_settings (
   current_song_id UUID REFERENCES songs(id) ON DELETE SET NULL,
   auto_dj BOOLEAN DEFAULT true,
   shuffle BOOLEAN DEFAULT false,
+  repeat_mode TEXT DEFAULT 'off',
   is_live_dj BOOLEAN DEFAULT false,
   mic_enabled BOOLEAN DEFAULT false,
   current_show_name TEXT,

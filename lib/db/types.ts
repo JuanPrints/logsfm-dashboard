@@ -71,6 +71,7 @@ export interface RadioSettingsRow {
   current_song_id: string | null;
   auto_dj: boolean;
   shuffle: boolean;
+  repeat_mode?: string;
   is_live_dj: boolean;
   mic_enabled: boolean;
   current_show_name: string | null;

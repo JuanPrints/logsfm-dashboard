@@ -1,6 +1,8 @@
-# LogsFM — Integrar el stream en tu app de oyentes
+# LogsFM — Stream: cómo funciona e integración para apps oyentes
 
-Guía para conectar **audio en vivo**, metadata (now playing, oyentes, historial) y actualizaciones en tiempo real desde tu app web o móvil.
+Guía completa: **arquitectura**, **pasos para que suene la radio**, **integración en tu app** (web/móvil), API y tiempo real.
+
+> **¿Solo quieres que suene?** Ve directo a [Guía paso a paso: que suene la radio](#0-guía-paso-a-paso-que-suene-la-radio).
 
 ---
 
@@ -13,6 +15,233 @@ Guía para conectar **audio en vivo**, metadata (now playing, oyentes, historial
 | **Panel admin** (solo DJs) | `https://admin.logsfm.com` |
 
 El stream es un mount Icecast en **MP3 128 kbps**. Funciona en `<audio>`, reproductores nativos, React Native, Flutter, etc.
+
+---
+
+## Índice
+
+1. [Cómo funciona (arquitectura)](#0-cómo-funciona-arquitectura)
+2. [Guía paso a paso: que suene la radio](#0-guía-paso-a-paso-que-suene-la-radio)
+3. [Reproducir el audio en tu app](#1-reproducir-el-audio-lo-mínimo)
+4. [API REST — metadata para la UI](#2-api-rest--metadata-para-la-ui)
+5. [Cliente TypeScript](#3-cliente-typescript-listo-para-copiar)
+6. [Hook React](#4-hook-react--reproductor--now-playing)
+7. [Tiempo real con MatuDB](#5-tiempo-real-con-matudb-recomendado)
+8. [CORS](#6-cors--importante-si-tu-app-está-en-otro-dominio)
+9. [Flujo recomendado](#7-flujo-recomendado-en-tu-app)
+10. [Problemas frecuentes](#8-problemas-frecuentes)
+11. [Ejemplo HTML completo](#9-ejemplo-mínimo-completo-una-sola-página)
+12. [Resumen rápido](#10-resumen-rápido)
+
+---
+
+## 0. Cómo funciona (arquitectura)
+
+LogsFM separa **tres capas** que deben estar activas para que los oyentes escuchen música:
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────┐     ┌────────────────────────┐
+│  admin.logsfm   │     │  Radio Engine    │     │ Icecast │     │  stream.logsfm.com     │
+│  (Consola DJ)   │────▶│  Node.js + PM2   │────▶│  :8000  │────▶│  /stream  (MP3 vivo)   │
+│  Play / Pause   │     │  FFmpeg          │     │         │     │                        │
+└─────────────────┘     └────────┬─────────┘     └─────────┘     └───────────┬────────────┘
+                                   │                                            │
+                                   ▼                                            ▼
+                          ┌────────────────┐                          ┌─────────────────┐
+                          │    MatuDB      │                          │  App oyentes    │
+                          │ now playing,   │◀── api.logsfm.com ───────│  <audio> / Expo │
+                          │ oyentes, cola  │                          │  React Native   │
+                          └────────────────┘                          └─────────────────┘
+```
+
+### Componentes
+
+| Pieza | Qué hace | Dónde corre |
+|-------|----------|-------------|
+| **Consola DJ** | Subes MP3, creas playlists, pulsas Play | `admin.logsfm.com` |
+| **Radio Engine** | Lee el MP3 con FFmpeg y lo envía a Icecast | Servidor VPS (PM2, puerto 3020) |
+| **Icecast** | Recibe el audio y lo reparte a oyentes | Servidor VPS (puerto 8000) |
+| **Nginx** | Expone HTTPS del stream | `stream.logsfm.com` → Icecast |
+| **API pública** | Devuelve nombre de canción, oyentes, etc. | `api.logsfm.com` |
+| **MatuDB** | Guarda estado y emite cambios en tiempo real | `db.matudb.com` |
+
+### Dos modos del stream
+
+El engine mantiene el mount **siempre conectado**:
+
+| Modo | Cuándo | Qué oyen los usuarios |
+|------|--------|------------------------|
+| **Silencio** | Pausa, stop, sin canción, arranque del servidor | Stream online pero **sin música** (silencio) |
+| **Música** | Play activo con canción en cola | **La canción en vivo** |
+
+> **Importante:** El admin puede mostrar "EN AIRE" pero si Icecast está en modo silencio, el reproductor avanza el tiempo y no se oye nada. Ver [verificación](#verificar-que-realmente-suena-música) abajo.
+
+### Qué NO detiene la emisión
+
+- Recargar `admin.logsfm.com` — el engine sigue en el servidor (PM2).
+- Cerrar el navegador del DJ — la radio sigue emitiendo.
+- Oyentes conectados/desconectados — no afecta al source.
+
+### Qué SÍ cambia el audio
+
+- **Play** → FFmpeg emite la canción actual.
+- **Pause / Stop** → FFmpeg emite silencio (mount sigue online).
+- **Siguiente canción** → FFmpeg cambia al siguiente MP3 automáticamente.
+
+---
+
+## 0. Guía paso a paso: que suene la radio
+
+### A. Configuración del servidor (una sola vez)
+
+#### 1. Icecast instalado y corriendo
+
+```bash
+sudo systemctl status icecast2
+sudo systemctl enable icecast2
+sudo systemctl start icecast2
+```
+
+#### 2. Variables en `.env` del proyecto
+
+En `~/apps/logsfm-dashboard/.env`:
+
+```env
+PORT=3020
+ICECAST_HOST=127.0.0.1
+ICECAST_PORT=8000
+ICECAST_MOUNT=/stream
+ICECAST_PASSWORD=tu_source_password_aqui
+ICECAST_BITRATE=128
+
+MATUDB_URL=https://db.matudb.com
+MATUDB_PROJECT_ID=tu-project-id
+MATUDB_API_KEY=tu-api-key
+```
+
+**Crítico:** `ICECAST_PASSWORD` debe ser **idéntico** a `<source-password>` en `/etc/icecast2/icecast.xml`.
+
+#### 3. FFmpeg instalado
+
+```bash
+ffmpeg -version
+# Si falta: sudo apt install -y ffmpeg
+```
+
+#### 4. App corriendo con PM2
+
+```bash
+cd ~/apps/logsfm-dashboard
+git pull origin master
+npm install
+npm run build
+pm2 restart logsfm-dashboard
+pm2 logs logsfm-dashboard --lines 20
+```
+
+Debes ver: `Radio engine iniciado` y `LogsFM en http://0.0.0.0:3020`.
+
+#### 5. Nginx para el stream
+
+El archivo `deploy/nginx-logsfm.conf` debe estar activo. El bloque `stream.logsfm.com` hace proxy a `127.0.0.1:8000`.
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+---
+
+### B. Emitir música desde el admin (cada sesión)
+
+1. Entra a **https://admin.logsfm.com**
+2. **Sube canciones** → `/admin/songs` → MP3
+3. **Crea una playlist** → `/admin/playlists` → agrega canciones
+4. En la **Consola DJ**:
+   - Selecciona la playlist
+   - Pulsa **「Cargar cola」** o **「Cargar y Play」**
+   - Pulsa **▶ Play**
+5. Verifica en el header: **Stream: online** y barra de progreso avanzando
+
+Si no suena después de Play:
+
+1. Pulsa **■ Stop**
+2. Espera 2 segundos
+3. Pulsa **▶ Play** de nuevo
+
+---
+
+### C. Verificar que realmente suena música
+
+#### Test 1 — Icecast metadata
+
+Abre en el navegador:
+
+```
+https://stream.logsfm.com/status-json.xsl
+```
+
+Busca `"server_name"`:
+
+| Valor | Significado |
+|-------|-------------|
+| `"La Vida Es Así"` (título de canción) | ✅ Música en vivo |
+| `"LogsFM"` solamente | ⚠️ Silencio — pulsa Stop + Play en admin |
+
+#### Test 2 — Escuchar directo
+
+```
+https://stream.logsfm.com/stream
+```
+
+Pulsa play en el reproductor del navegador. Debes oír la canción.
+
+> Usa **pestaña nueva** o URL con cache-bust si ya tenías la pestaña abierta:
+> `https://stream.logsfm.com/stream?t=2`
+
+#### Test 3 — Logs del engine
+
+```bash
+pm2 logs logsfm-dashboard --lines 50
+```
+
+Busca líneas como:
+
+```
+[FFmpeg] → music: La Vida Es Así ← /root/apps/logsfm-dashboard/uploads/songs/...
+[RadioEngine] Stream música: La Vida Es Así ← ...
+```
+
+Si ves `[FFmpeg] → silence` mientras el admin está en Play, hay desincronización — Stop + Play lo corrige.
+
+#### Test 4 — API
+
+```bash
+curl https://api.logsfm.com/api/now-playing
+```
+
+Debe devolver `"playback": "playing"` y `"name": "Título de la canción"`.
+
+---
+
+### D. Integrar en tu app de oyentes (resumen)
+
+```typescript
+// 1. Audio en vivo
+const STREAM = "https://stream.logsfm.com/stream";
+audio.src = STREAM;
+await audio.play();
+
+// 2. Nombre de canción para la UI
+const res = await fetch("https://api.logsfm.com/api/now-playing");
+const { data } = await res.json();
+document.title = data.name;           // "La Vida Es Así"
+document.subtitle = data.subtitle;    // "LogsFM" o artista
+document.badge = data.display.badge;  // "En vivo · La Vida Es Así"
+```
+
+**No uses `data.artist` como título** — puede ser `null`. Usa siempre **`data.name`**.
+
+Detalle completo en las secciones siguientes.
 
 ---
 

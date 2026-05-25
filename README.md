@@ -79,7 +79,7 @@ Esto levanta:
 | `GET /api/playlists` | Listado de playlists |
 | `GET /api/playlists?id=UUID` | Playlist con canciones |
 
-Guía para integrar el stream en tu app de oyentes: **[docs/APP-STREAM.md](./docs/APP-STREAM.md)**
+Guía para integrar el stream en tu app de oyentes: **[docs/APP-STREAM.md](./docs/APP-STREAM.md)** (completa) · **[docs/STREAM-QUICKSTART.md](./docs/STREAM-QUICKSTART.md)** (inicio rápido)
 
 ## Realtime (MatuDB — sin Socket.io propio)
 

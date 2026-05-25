@@ -1,19 +1,21 @@
 "use client";
 
-import { Trash2, ListX } from "lucide-react";
+import { Trash2, ListX, Play } from "lucide-react";
 import { formatDuration } from "@/lib/utils";
 import { useRadioStore } from "@/lib/store/radio-store";
 
 export function QueuePanel() {
-  const { queue, sendCommand, refresh } = useRadioStore();
+  const { queue, sendCommand, radioAction } = useRadioStore();
 
   const clearQueue = async () => {
-    await fetch("/api/admin/radio", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "clear-queue" }),
-    });
-    await refresh();
+    await radioAction({ action: "clear-queue" });
+  };
+
+  const playFromQueue = async (songId: string) => {
+    await radioAction(
+      { action: "play-now", songId },
+      { playback: "playing" },
+    );
   };
 
   return (
@@ -52,6 +54,14 @@ export function QueuePanel() {
                 <p className="truncate text-muted">{item.artist}</p>
               </div>
               <span className="text-muted">{formatDuration(item.duration)}</span>
+              <button
+                type="button"
+                title="Reproducir ahora"
+                onClick={() => playFromQueue(item.songId)}
+                className="rounded p-1 text-accent opacity-0 hover:text-accent group-hover:opacity-100"
+              >
+                <Play className="h-3 w-3" />
+              </button>
               <button
                 type="button"
                 onClick={() =>

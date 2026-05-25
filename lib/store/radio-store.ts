@@ -70,6 +70,7 @@ export const useRadioStore = create<RadioStore>((set, get) => ({
   micEnabled: false,
   autoDj: true,
   shuffle: false,
+  repeatMode: "off" as const,
 
   refresh: async () => {
     try {

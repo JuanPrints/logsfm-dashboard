@@ -2,6 +2,8 @@ export type StreamStatus = "online" | "offline" | "connecting" | "error";
 
 export type PlaybackState = "playing" | "paused" | "stopped";
 
+export type RepeatMode = "off" | "one" | "all";
+
 export interface NowPlaying {
   id: string;
   title: string;
@@ -64,6 +66,7 @@ export interface RadioState {
   micEnabled: boolean;
   autoDj: boolean;
   shuffle: boolean;
+  repeatMode: RepeatMode;
 }
 
 export interface SocketEvents {
@@ -85,6 +88,8 @@ export type AdminCommand =
   | { action: "previous" }
   | { action: "toggle-autodj" }
   | { action: "toggle-shuffle" }
+  | { action: "toggle-repeat" }
+  | { action: "replay-current" }
   | { action: "toggle-mic" }
   | { action: "go-live" }
   | { action: "stop-live" }

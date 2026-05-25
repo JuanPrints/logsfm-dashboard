@@ -14,7 +14,7 @@ async function startRadioEngine() {
   const engine = getRadioEngine();
   await engine.init();
 
-  setInterval(() => engine.ensureMountAlive(), 5000);
+  setInterval(() => engine.ensureMountAlive(), 30_000);
 
   setInterval(async () => {
     try {
