@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "child_process";
 import { EventEmitter } from "events";
 import path from "path";
 import fs from "fs";
@@ -10,12 +9,9 @@ import { addToHistory } from "@/lib/db/history";
 import { getRadioSettings, updateRadioSettings, updateStreamStats } from "@/lib/db/settings";
 import { getActiveShowNow } from "@/lib/db/shows";
 import { getMatuClient } from "@/lib/db/matu";
+import { IcecastPipeline } from "@/lib/radio-engine/icecast-pipeline";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads", "songs");
-const RESTART_COOLDOWN_MS = 10_000;
-const ICECAST_RELEASE_MS = 2_000;
-
-type StreamMode = "silence" | "music";
 
 function parseRepeatMode(value?: string | null): RepeatMode {
   if (value === "one" || value === "all") return value;
@@ -23,9 +19,7 @@ function parseRepeatMode(value?: string | null): RepeatMode {
 }
 
 export class RadioEngine extends EventEmitter {
-  private ffmpegProcess: ChildProcess | null = null;
-  private streamMode: StreamMode | null = null;
-  private ffmpegGeneration = 0;
+  private pipeline: IcecastPipeline;
   private broadcastEnabled = false;
   private playbackState: PlaybackState = "stopped";
   private nowPlaying: NowPlaying | null = null;
@@ -39,10 +33,7 @@ export class RadioEngine extends EventEmitter {
   private musicVolume = 85;
   private micVolume = 100;
   private ducking = true;
-  private startingFfmpeg = false;
   private repeatMode: RepeatMode = "off";
-  private lastMusicRestartAt = 0;
-  private restartTimer: NodeJS.Timeout | null = null;
   private handlingTrackEnd = false;
 
   constructor() {
@@ -50,6 +41,16 @@ export class RadioEngine extends EventEmitter {
     if (!fs.existsSync(UPLOADS_DIR)) {
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
     }
+    const host = process.env.ICECAST_HOST ?? "127.0.0.1";
+    const port = process.env.ICECAST_PORT ?? "8000";
+    const password = process.env.ICECAST_PASSWORD ?? "hackme";
+    const mount = process.env.ICECAST_MOUNT ?? "/stream";
+    const bitrate = process.env.ICECAST_BITRATE ?? "128";
+    const url = `icecast://source:${password}@${host}:${port}${mount}`;
+    this.pipeline = new IcecastPipeline(url, bitrate);
+    this.pipeline.setTrackEndHandler(() => {
+      this.onTrackEnded().catch((err) => console.error("[RadioEngine] onTrackEnded:", err));
+    });
   }
 
   async init() {
@@ -78,6 +79,7 @@ export class RadioEngine extends EventEmitter {
     }
 
     this.broadcastEnabled = true;
+    this.setStreamStatus("connecting");
 
     if (this.playbackState === "playing" && this.nowPlaying) {
       try {
@@ -95,210 +97,23 @@ export class RadioEngine extends EventEmitter {
     }
   }
 
-  /** Watchdog — solo remonta si FFmpeg murió (sin reiniciar en bucle) */
+  /** Watchdog — remonta encoder si se cayó (sin matar mount en cada canción) */
   async ensureMountAlive() {
-    if (!this.broadcastEnabled || this.startingFfmpeg || this.ffmpegProcess) return;
+    if (!this.broadcastEnabled) return;
+    if (this.pipeline.isConnected()) return;
 
-    const sinceRestart = Date.now() - this.lastMusicRestartAt;
-    if (sinceRestart < RESTART_COOLDOWN_MS) return;
-
-    console.log("[RadioEngine] Watchdog: FFmpeg caído, remontando...");
+    console.log("[RadioEngine] Watchdog: reconectando encoder...");
+    this.setStreamStatus("connecting");
     if (this.playbackState === "playing" && this.nowPlaying) {
-      await this.scheduleMusicRestart(2000);
+      await this.startMusicStream();
     } else {
       await this.startSilenceHolder();
     }
   }
 
-  private clearRestartTimer() {
-    if (this.restartTimer) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = null;
-    }
-  }
-
-  private async scheduleMusicRestart(delayMs = 2000) {
-    this.clearRestartTimer();
-    const elapsed = Date.now() - this.lastMusicRestartAt;
-    const wait = Math.max(delayMs, RESTART_COOLDOWN_MS - elapsed);
-
-    this.restartTimer = setTimeout(async () => {
-      this.restartTimer = null;
-      if (this.playbackState !== "playing" || !this.nowPlaying) return;
-      try {
-        await this.startMusicStream();
-      } catch (err) {
-        console.error("[RadioEngine] Reinicio música falló:", err);
-      }
-    }, wait);
-  }
-
-  private icecastOutput() {
-    const host = process.env.ICECAST_HOST ?? "127.0.0.1";
-    const port = process.env.ICECAST_PORT ?? "8000";
-    const password = process.env.ICECAST_PASSWORD ?? "hackme";
-    const mount = process.env.ICECAST_MOUNT ?? "/stream";
-    return `icecast://source:${password}@${host}:${port}${mount}`;
-  }
-
-  private icecastTail(opts?: { streamTitle?: string; streamDescription?: string }) {
-    const bitrate = process.env.ICECAST_BITRATE ?? "128";
-    const tail: string[] = [
-      "-acodec", "libmp3lame",
-      "-b:a", `${bitrate}k`,
-      "-ar", "44100",
-      "-ac", "2",
-      "-write_xing", "0",
-      "-content_type", "audio/mpeg",
-      "-f", "mp3",
-      "-ice_name", opts?.streamTitle ?? "LogsFM",
-      "-legacy_icecast", "1",
-    ];
-    if (opts?.streamDescription) {
-      tail.push("-ice_description", opts.streamDescription);
-    }
-    tail.push(this.icecastOutput());
-    return tail;
-  }
-
-  private encodeArgs(extraInput: string[], meta?: { streamTitle?: string; streamDescription?: string }) {
-    return [...extraInput, ...this.icecastTail(meta)];
-  }
-
-  private musicStreamArgs(inputFile: string) {
-    const volume = (this.musicVolume / 100).toFixed(2);
-    const title = this.nowPlaying?.title ?? "LogsFM";
-    const artist = this.nowPlaying?.artist?.trim() || "LogsFM";
-    const description = `${artist} - ${title}`;
-
-    return this.encodeArgs(
-      [
-        "-hide_banner",
-        "-loglevel", "warning",
-        "-re",
-        "-i", inputFile,
-        "-map", "0:a:0",
-        "-af", `volume=${volume}`,
-        "-metadata", `title=${title}`,
-        "-metadata", `artist=${artist}`,
-      ],
-      { streamTitle: title, streamDescription: description },
-    );
-  }
-
-  private detachFfmpegHandlers(proc: ChildProcess) {
-    proc.removeAllListeners("close");
-    proc.removeAllListeners("error");
-    proc.stderr?.removeAllListeners("data");
-  }
-
-  private async killFfmpeg() {
-    const proc = this.ffmpegProcess;
-    if (!proc) {
-      this.streamMode = null;
-      return;
-    }
-
-    this.detachFfmpegHandlers(proc);
-    this.ffmpegProcess = null;
-    this.streamMode = null;
-    this.ffmpegGeneration += 1;
-
-    proc.kill("SIGTERM");
-    await new Promise((r) => setTimeout(r, ICECAST_RELEASE_MS));
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      /* already dead */
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-
-  private attachFfmpegHandlers(proc: ChildProcess, mode: StreamMode, gen: number) {
-    proc.stderr?.on("data", (data: Buffer) => {
-      const msg = data.toString();
-      if (msg.includes("403") || msg.includes("401") || msg.includes("Connection refused")) {
-        console.error("[FFmpeg]", msg.slice(0, 300));
-        this.setStreamStatus("error");
-      } else if (msg.includes("Error") || msg.includes("Invalid")) {
-        console.error("[FFmpeg]", msg.slice(0, 300));
-      } else if (msg.includes("size=") || msg.includes("bitrate=")) {
-        this.setStreamStatus("online");
-      }
-    });
-
-    proc.on("close", async (code) => {
-      if (gen !== this.ffmpegGeneration) return;
-      if (this.ffmpegProcess === proc) {
-        this.ffmpegProcess = null;
-        this.streamMode = null;
-      }
-
-      console.warn(`[FFmpeg] Cerrado mode=${mode} code=${code}`);
-
-      if (mode === "music" && this.playbackState === "playing") {
-        if (code === 0) {
-          await this.onTrackEnded();
-          return;
-        }
-        await this.scheduleMusicRestart(code === 224 ? 4000 : 2500);
-        return;
-      }
-
-      if (this.broadcastEnabled && !this.ffmpegProcess && !this.startingFfmpeg) {
-        if (this.playbackState === "playing" && this.nowPlaying) {
-          await this.scheduleMusicRestart(3000);
-        } else {
-          await this.startSilenceHolder();
-        }
-      }
-    });
-
-    proc.on("error", (err) => {
-      if (gen !== this.ffmpegGeneration) return;
-      console.error("[FFmpeg] error:", err);
-      this.setStreamStatus("error");
-    });
-  }
-
-  private async launchFfmpeg(args: string[], mode: StreamMode) {
-    if (this.startingFfmpeg) return;
-
-    const sinceRestart = Date.now() - this.lastMusicRestartAt;
-    if (mode === "music" && sinceRestart < RESTART_COOLDOWN_MS) {
-      await this.scheduleMusicRestart(RESTART_COOLDOWN_MS - sinceRestart);
-      return;
-    }
-
-    this.startingFfmpeg = true;
-    this.clearRestartTimer();
-
-    try {
-      await this.killFfmpeg();
-      const gen = this.ffmpegGeneration;
-      this.streamMode = mode;
-      this.setStreamStatus("connecting");
-
-      if (mode === "music") {
-        this.lastMusicRestartAt = Date.now();
-        console.log(`[RadioEngine] FFmpeg música → ${this.nowPlaying?.title ?? "?"}`);
-      }
-
-      const proc = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
-      this.ffmpegProcess = proc;
-      this.attachFfmpegHandlers(proc, mode, gen);
-
-      if (mode === "music") {
-        this.setStreamStatus("online");
-      }
-    } finally {
-      this.startingFfmpeg = false;
-    }
-  }
-
   async ensureBroadcastOnline() {
     this.broadcastEnabled = true;
-    if (!this.ffmpegProcess && !this.startingFfmpeg) {
+    if (!this.pipeline.isConnected()) {
       if (this.playbackState === "playing" && this.nowPlaying) {
         await this.startMusicStream();
       } else {
@@ -308,22 +123,7 @@ export class RadioEngine extends EventEmitter {
   }
 
   async startSilenceHolder() {
-    if (this.playbackState === "playing" && this.nowPlaying) {
-      return;
-    }
-
-    const args = this.encodeArgs(
-      [
-        "-hide_banner",
-        "-loglevel", "warning",
-        "-re",
-        "-f", "lavfi",
-        "-i", "anullsrc=r=44100:cl=stereo",
-      ],
-      { streamTitle: "LogsFM", streamDescription: "Radio en vivo" },
-    );
-
-    await this.launchFfmpeg(args, "silence");
+    await this.pipeline.playSilence();
     this.setStreamStatus("online");
   }
 
@@ -340,9 +140,13 @@ export class RadioEngine extends EventEmitter {
       throw new Error(`Archivo MP3 no encontrado: ${path.basename(song.file_path)}`);
     }
 
-    console.log(`[RadioEngine] Stream música: ${song.title} ← ${inputFile}`);
-    const args = this.musicStreamArgs(inputFile);
-    await this.launchFfmpeg(args, "music");
+    const artist = song.artist?.trim() || "LogsFM";
+    await this.pipeline.playFile(
+      inputFile,
+      { title: song.title, artist },
+      this.musicVolume / 100,
+    );
+    this.setStreamStatus("online");
   }
 
   getState() {
@@ -356,7 +160,7 @@ export class RadioEngine extends EventEmitter {
       isLiveDj: this.isLiveDj,
       micEnabled: this.micEnabled,
       broadcastEnabled: this.broadcastEnabled,
-      streamMode: this.streamMode,
+      streamMode: this.pipeline.getMode(),
       stream: {
         status: this.streamStatus,
         listeners: this.activeListeners,
@@ -404,8 +208,8 @@ export class RadioEngine extends EventEmitter {
     this.playbackState = "stopped";
     this.nowPlaying = null;
     this.stopElapsedTimer();
-    await this.startSilenceHolder();
     await updateRadioSettings({ playback_state: "stopped", current_song_id: null });
+    await this.startSilenceHolder();
     this.emitState();
   }
 
@@ -482,7 +286,7 @@ export class RadioEngine extends EventEmitter {
       this.startedAt = new Date();
       this.nowPlaying.startedAt = this.startedAt.toISOString();
       this.nowPlaying.elapsed = 0;
-      await this.scheduleMusicRestart(1500);
+      await this.startMusicStream();
     }
     this.emitState();
   }
@@ -497,7 +301,7 @@ export class RadioEngine extends EventEmitter {
       await updateRadioSettings({ playback_state: "playing" });
       this.startElapsedTimer();
     }
-    await this.scheduleMusicRestart(500);
+    await this.startMusicStream();
     this.emitState();
   }
 
@@ -528,7 +332,7 @@ export class RadioEngine extends EventEmitter {
         };
         this.startedAt = new Date();
         await updateRadioSettings({ current_song_id: song.id });
-        await this.scheduleMusicRestart(2000);
+        await this.startMusicStream();
         this.emitState();
         return;
       }
@@ -538,7 +342,9 @@ export class RadioEngine extends EventEmitter {
         this.startedAt = new Date();
         this.nowPlaying.startedAt = this.startedAt.toISOString();
         this.nowPlaying.elapsed = 0;
-        await this.scheduleMusicRestart(2000);
+        await this.startMusicStream();
+      } else if (this.broadcastEnabled) {
+        await this.startSilenceHolder();
       }
       this.emitState();
     } finally {
@@ -670,8 +476,8 @@ export class RadioEngine extends EventEmitter {
       this.nowPlaying = null;
       this.playbackState = "paused";
       this.stopElapsedTimer();
-      await this.startSilenceHolder();
       await updateRadioSettings({ playback_state: "paused", current_song_id: null });
+      await this.startSilenceHolder();
       return;
     }
 
@@ -728,7 +534,7 @@ export class RadioEngine extends EventEmitter {
       ? { ...this.nowPlaying, elapsed: Math.min(elapsed, this.nowPlaying.duration) }
       : null;
 
-    const liveStatus = this.ffmpegProcess ? "online" : base.stream.status;
+    const liveStatus = this.pipeline.isConnected() ? "online" : base.stream.status;
 
     return {
       ...base,

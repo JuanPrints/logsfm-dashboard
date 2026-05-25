@@ -81,6 +81,14 @@ setInterval(updateUI, 5000);
 
 ---
 
+## Stream continuo (no se corta entre canciones)
+
+Desde la última versión, **un solo encoder** permanece conectado a Icecast. Al cambiar de canción solo se cambia el decoder interno — los oyentes **no deberían ver el reproductor en 0:00** ni quedarse mudos por reconexión.
+
+Si el stream se cae, el watchdog lo remonta en ~60 s.
+
+---
+
 ## Repetir canciones / playlist
 
 En la consola DJ:

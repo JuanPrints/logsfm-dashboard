@@ -11,10 +11,20 @@ const hostname = process.env.HOST ?? "0.0.0.0";
 const port = parseInt(process.env.PORT ?? "3000", 10);
 
 async function startRadioEngine() {
-  const engine = getRadioEngine();
-  await engine.init();
+  try {
+    const engine = getRadioEngine();
+    await engine.init();
+    console.log("> Radio engine iniciado (pipeline PCM → Icecast)");
+  } catch (err) {
+    console.error("[RadioEngine] Error en init, reintento en 15s:", err);
+    setTimeout(() => startRadioEngine(), 15_000);
+    return;
+  }
 
-  setInterval(() => engine.ensureMountAlive(), 30_000);
+  const engine = getRadioEngine();
+  setInterval(() => {
+    engine.ensureMountAlive().catch((e) => console.error("[Watchdog]", e));
+  }, 60_000);
 
   setInterval(async () => {
     try {
@@ -42,8 +52,6 @@ async function startRadioEngine() {
       engine.syncIcecastStatus(false, false);
     }
   }, 10000);
-
-  console.log("> Radio engine iniciado (FFmpeg + Icecast → MatuDB Realtime)");
 }
 
 async function main() {
@@ -51,7 +59,11 @@ async function main() {
   const handle = app.getRequestHandler();
 
   await app.prepare();
-  await startRadioEngine();
+  startRadioEngine();
+
+  process.on("unhandledRejection", (err) => {
+    console.error("[unhandledRejection]", err);
+  });
 
   createServer((req, res) => {
     handle(req, res);
