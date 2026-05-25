@@ -1,6 +1,10 @@
+import { loadEnvConfig } from "@next/env";
 import { createServer } from "http";
 import next from "next";
 import { getRadioEngine } from "../lib/radio-engine";
+
+// Cargar .env ANTES de leer PORT (fix producción con PM2)
+loadEnvConfig(process.cwd());
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOST ?? "0.0.0.0";
@@ -10,7 +14,6 @@ async function startRadioEngine() {
   const engine = getRadioEngine();
   await engine.init();
 
-  // Poll Icecast y persistir oyentes en MatuDB (realtime automático)
   setInterval(async () => {
     try {
       const host = process.env.ICECAST_HOST ?? "localhost";
