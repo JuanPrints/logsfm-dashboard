@@ -585,9 +585,14 @@ El **stream de audio** (`stream.logsfm.com`) no requiere CORS para `<audio>` —
 
 ### El reproductor avanza pero no se oye nada
 
-- Recarga la pestaña del stream (el mount pudo haber cambiado de silencio a música).
-- Verifica en admin que hay canción en **Play**, no solo pausada.
-- Prueba la URL directa: `https://stream.logsfm.com/stream`
+- **Causa habitual:** el mount de Icecast está en modo silencio aunque el admin muestre "playing". Verifica en `https://stream.logsfm.com/status-json.xsl` que `server_name` sea el **título de la canción**, no solo `"LogsFM"`.
+- Recarga la pestaña del stream o usa URL con cache-bust: `https://stream.logsfm.com/stream?t=1`
+- En admin: pulsa **Stop** y luego **Play** de nuevo para forzar remontaje de música.
+- Revisa logs: `pm2 logs logsfm-dashboard --lines 80` — busca `[FFmpeg] → music:`
+
+### El tiempo del stream vuelve a 0 al abrir la URL
+
+- Normal en streams en vivo cuando el source se reconecta. Tras el fix del engine, debería mantenerse estable mientras suena música.
 
 ### Error CORS en fetch desde tu app
 
