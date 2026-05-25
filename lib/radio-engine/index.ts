@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { spawn, execSync, type ChildProcessWithoutNullStreams } from "child_process";
 import { EventEmitter } from "events";
 import path from "path";
 import fs from "fs";
@@ -12,6 +12,7 @@ import { getActiveShowNow } from "@/lib/db/shows";
 import { getMatuClient } from "@/lib/db/matu";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads", "songs");
+const SILENCE_FILE = path.join(process.cwd(), "uploads", "silence.mp3");
 
 type StreamMode = "silence" | "music";
 
@@ -32,11 +33,25 @@ export class RadioEngine extends EventEmitter {
   private micVolume = 100;
   private ducking = true;
   private intentionalKill = false;
+  private startingFfmpeg = false;
 
   constructor() {
     super();
     if (!fs.existsSync(UPLOADS_DIR)) {
       fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+    }
+    this.ensureSilenceFile();
+  }
+
+  private ensureSilenceFile() {
+    if (fs.existsSync(SILENCE_FILE)) return;
+    try {
+      execSync(
+        `ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t 2 -c:a libmp3lame -b:a 128k "${SILENCE_FILE}"`,
+        { stdio: "ignore" },
+      );
+    } catch (err) {
+      console.error("[RadioEngine] No se pudo crear silence.mp3:", err);
     }
   }
 
@@ -82,7 +97,7 @@ export class RadioEngine extends EventEmitter {
   /** Watchdog — remonta el mount si FFmpeg muere */
   async ensureMountAlive() {
     if (!this.broadcastEnabled) return;
-    if (this.ffmpegProcess) return;
+    if (this.ffmpegProcess || this.startingFfmpeg) return;
 
     console.log("[RadioEngine] Watchdog: remontando stream...");
     if (this.playbackState === "playing" && this.nowPlaying) {
@@ -104,18 +119,51 @@ export class RadioEngine extends EventEmitter {
     return `icecast://source:${password}@${host}:${port}${mount}`;
   }
 
-  private encodeArgs(extraInput: string[]) {
+  private icecastTail(copyMode = false) {
     const bitrate = process.env.ICECAST_BITRATE ?? "128";
+    const tail = [
+      "-content_type", "audio/mpeg",
+      "-f", "mp3",
+      "-ice_name", "LogsFM",
+      "-legacy_icecast", "1",
+      this.icecastOutput(),
+    ];
+    if (copyMode) return tail;
     return [
-      ...extraInput,
       "-acodec", "libmp3lame",
       "-ab", `${bitrate}k`,
       "-ar", "44100",
       "-ac", "2",
-      "-flush_packets", "1",
-      "-f", "mp3",
-      this.icecastOutput(),
+      "-write_xing", "0",
+      ...tail,
     ];
+  }
+
+  private encodeArgs(extraInput: string[]) {
+    return [...extraInput, ...this.icecastTail(false)];
+  }
+
+  private musicStreamArgs(inputFile: string, filePath: string) {
+    const isLocalMp3 =
+      !inputFile.startsWith("http") && filePath.toLowerCase().endsWith(".mp3");
+
+    // Passthrough MP3 — más compatible con Icecast y navegadores
+    if (isLocalMp3) {
+      return [
+        "-re",
+        "-i", inputFile,
+        "-map", "0:a",
+        "-c:a", "copy",
+        ...this.icecastTail(true),
+      ];
+    }
+
+    const volume = (this.musicVolume / 100).toFixed(2);
+    return this.encodeArgs([
+      "-re",
+      "-i", inputFile,
+      "-af", `volume=${volume}`,
+    ]);
   }
 
   private async killFfmpeg() {
@@ -151,11 +199,25 @@ export class RadioEngine extends EventEmitter {
 
       if (this.intentionalKill) return;
 
-      console.warn(`[FFmpeg] Proceso cerrado (code=${code}), remontando...`);
+      console.warn(`[FFmpeg] Proceso cerrado mode=${mode} code=${code}, remontando...`);
 
-      if (mode === "music" && code === 0 && this.playbackState === "playing") {
-        await this.next();
-      } else if (this.broadcastEnabled) {
+      if (mode === "music" && this.playbackState === "playing") {
+        if (code === 0) {
+          await this.next();
+          return;
+        }
+        try {
+          await this.startMusicStream();
+          return;
+        } catch (err) {
+          console.error("[FFmpeg] Reintento de música falló:", err);
+          this.playbackState = "paused";
+          await updateRadioSettings({ playback_state: "paused" });
+          this.emitState();
+        }
+      }
+
+      if (this.broadcastEnabled) {
         await this.startSilenceHolder();
       }
     });
@@ -173,19 +235,38 @@ export class RadioEngine extends EventEmitter {
     }
   }
 
+  private async launchFfmpeg(args: string[], mode: StreamMode) {
+    if (this.startingFfmpeg) return;
+    this.startingFfmpeg = true;
+    try {
+      await this.killFfmpeg();
+      this.streamMode = mode;
+      this.setStreamStatus("connecting");
+      console.log(`[FFmpeg] Iniciando ${mode}:`, args.slice(0, 8).join(" "), "...");
+      this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
+      this.attachFfmpegHandlers(mode);
+    } finally {
+      this.startingFfmpeg = false;
+    }
+  }
+
   async startSilenceHolder() {
-    await this.killFfmpeg();
-    this.streamMode = "silence";
-    this.setStreamStatus("connecting");
+    this.ensureSilenceFile();
+    const args = fs.existsSync(SILENCE_FILE)
+      ? [
+          "-re",
+          "-stream_loop", "-1",
+          "-i", SILENCE_FILE,
+          "-c:a", "copy",
+          ...this.icecastTail(true),
+        ]
+      : this.encodeArgs([
+          "-re",
+          "-f", "lavfi",
+          "-i", "anullsrc=r=44100:cl=stereo",
+        ]);
 
-    const args = this.encodeArgs([
-      "-re",
-      "-f", "lavfi",
-      "-i", "anullsrc=r=44100:cl=stereo",
-    ]);
-
-    this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
-    this.attachFfmpegHandlers("silence");
+    await this.launchFfmpeg(args, "silence");
     this.setStreamStatus("online");
   }
 
@@ -202,19 +283,8 @@ export class RadioEngine extends EventEmitter {
       throw new Error(`Archivo MP3 no encontrado: ${path.basename(song.file_path)}`);
     }
 
-    await this.killFfmpeg();
-    this.streamMode = "music";
-    this.setStreamStatus("connecting");
-
-    const volume = (this.musicVolume / 100).toFixed(2);
-    const args = this.encodeArgs([
-      "-re",
-      "-i", inputFile,
-      "-af", `volume=${volume}`,
-    ]);
-
-    this.ffmpegProcess = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
-    this.attachFfmpegHandlers("music");
+    const args = this.musicStreamArgs(inputFile, song.file_path);
+    await this.launchFfmpeg(args, "music");
   }
 
   getState() {
