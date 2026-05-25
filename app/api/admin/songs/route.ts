@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { listSongs, createSong, deleteSong } from "@/lib/db/songs";
-import { uploadSongFile, uploadCoverImage } from "@/lib/db/settings";
+import { storeSongFile, storeCoverFile } from "@/lib/upload/song-storage";
 import { parseBuffer } from "music-metadata";
+
+export const runtime = "nodejs";
+export const maxDuration = 120;
 
 export async function GET(request: Request) {
   try {
@@ -10,10 +13,9 @@ export async function GET(request: Request) {
     const songs = await listSongs(categoryId);
     return NextResponse.json({ success: true, data: songs });
   } catch (err) {
-    return NextResponse.json(
-      { success: false, error: err instanceof Error ? err.message : "Error" },
-      { status: 500 },
-    );
+    const message = err instanceof Error ? err.message : "Error";
+    console.error("[GET /api/admin/songs]", message);
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }
 
@@ -31,41 +33,56 @@ export async function POST(request: Request) {
       );
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const metadata = await parseBuffer(buffer, { mimeType: file.type });
+    if (!file.name.match(/\.(mp3|mpeg)$/i) && !file.type.includes("audio")) {
+      return NextResponse.json(
+        { success: false, error: "Solo se permiten archivos MP3" },
+        { status: 400 },
+      );
+    }
 
-    const upload = await uploadSongFile(file.name, buffer);
+    const buffer = Buffer.from(await file.arrayBuffer());
+
+    let metadata;
+    try {
+      metadata = await parseBuffer(buffer, {
+        mimeType: file.type || "audio/mpeg",
+      });
+    } catch {
+      metadata = { common: {}, format: {} };
+    }
+
+    const { localPath, remoteUrl } = await storeSongFile(file.name, buffer);
 
     let coverUrl: string | null = null;
     if (cover) {
       const coverBuffer = Buffer.from(await cover.arrayBuffer());
-      const coverUpload = await uploadCoverImage(cover.name, coverBuffer);
-      coverUrl = coverUpload.publicUrl;
-    } else if (metadata.common.picture?.[0]) {
+      coverUrl = await storeCoverFile(cover.name, coverBuffer);
+    } else if (metadata.common?.picture?.[0]) {
       const pic = metadata.common.picture[0];
-      const coverUpload = await uploadCoverImage(
+      coverUrl = await storeCoverFile(
         `${file.name}-cover.jpg`,
         Buffer.from(pic.data),
       );
-      coverUrl = coverUpload.publicUrl;
     }
 
     const song = await createSong({
-      title: metadata.common.title ?? file.name.replace(/\.mp3$/i, ""),
-      artist: metadata.common.artist ?? "Unknown",
-      album: metadata.common.album ?? null,
-      duration: Math.round(metadata.format.duration ?? 0),
+      title: metadata.common?.title ?? file.name.replace(/\.mp3$/i, ""),
+      artist: metadata.common?.artist ?? "Unknown",
+      album: metadata.common?.album ?? null,
+      duration: Math.round(metadata.format?.duration ?? 0),
       cover_url: coverUrl,
-      file_path: upload.path,
-      category_id: categoryId,
+      file_path: localPath,
+      category_id: categoryId?.trim() ? categoryId : null,
     });
 
-    return NextResponse.json({ success: true, data: song });
+    return NextResponse.json({
+      success: true,
+      data: { ...song, remote_url: remoteUrl },
+    });
   } catch (err) {
-    return NextResponse.json(
-      { success: false, error: err instanceof Error ? err.message : "Error" },
-      { status: 500 },
-    );
+    const message = err instanceof Error ? err.message : "Error al subir canción";
+    console.error("[POST /api/admin/songs]", message, err);
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }
 
@@ -82,9 +99,8 @@ export async function DELETE(request: Request) {
     await deleteSong(id);
     return NextResponse.json({ success: true });
   } catch (err) {
-    return NextResponse.json(
-      { success: false, error: err instanceof Error ? err.message : "Error" },
-      { status: 500 },
-    );
+    const message = err instanceof Error ? err.message : "Error";
+    console.error("[DELETE /api/admin/songs]", message);
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }

@@ -39,9 +39,16 @@ export default function SongsPage() {
     const formData = new FormData();
     formData.append("file", file);
 
-    await fetch("/api/admin/songs", { method: "POST", body: formData });
+    const res = await fetch("/api/admin/songs", { method: "POST", body: formData });
+    const json = await res.json();
     setUploading(false);
     if (fileRef.current) fileRef.current.value = "";
+
+    if (!json.success) {
+      alert(`Error al subir: ${json.error ?? "Error desconocido"}`);
+      return;
+    }
+
     fetchSongs();
   };
 
